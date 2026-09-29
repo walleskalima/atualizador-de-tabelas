@@ -2,3 +2,4 @@ streamlit
 openpyxl
 pymupdf
 pandas
+pillow
