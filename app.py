@@ -1001,9 +1001,10 @@ elif extensao == ".xlsx":
             )
         ]
 
-        letra_coluna = st.selectbox(
-            "3. Escolha a letra da coluna dos preços",
+        letras_colunas_selecionadas = st.multiselect(
+            "3. Escolha as colunas que deseja alterar",
             letras_colunas,
+            default=["E"] if "E" in letras_colunas else [],
         )
 
         numero_coluna = 0
