@@ -421,36 +421,22 @@ def parece_preco_excel(valor):
     return bool(re.match(padrao, valor))
 
 
-def criar_formula_multiplicada(
-    formula_original,
-    multiplicador,
-):
+def manter_formula_original(formula_original):
     """
-    Multiplica o resultado completo da fórmula.
+    Mantém a fórmula original da planilha sem multiplicá-la.
 
-    =E81
-    vira:
-    =(E81)*2.383949988
+    Exemplo:
 
-    =E5+100
-    vira:
-    =(E5+100)*2.383949988
+    =E80/3
 
-    =SOMA(E5:E10)
-    vira:
-    =(SOMA(E5:E10))*2.383949988
+    continua sendo:
+
+    =E80/3
+
+    O multiplicador é aplicado somente ao valor original
+    das células que realmente contêm preços, e não às fórmulas.
     """
-    formula_sem_igual = formula_original[1:].strip()
-
-    if not formula_sem_igual:
-        return formula_original
-
-    return (
-        "=("
-        + formula_sem_igual
-        + ")*"
-        + str(multiplicador)
-    )
+    return formula_original
 
 
 def atualizar_excel(
@@ -467,7 +453,19 @@ def atualizar_excel(
     teto(valor x multiplicador)
 
     Fórmulas:
-    mantém a fórmula e multiplica o resultado completo.
+    mantém a fórmula original sem multiplicá-la.
+
+    Isso é importante quando, por exemplo:
+
+    E80 = 3061,98
+    E81 = E80/3
+
+    Após a atualização:
+
+    E80 = 7300 (considerando o arredondamento para cima)
+    E81 = E80/3
+
+    Assim, a fórmula continua calculando 1/3 do novo valor de E80.
     """
     workbook = load_workbook(
         io.BytesIO(arquivo_excel),
@@ -493,25 +491,27 @@ def atualizar_excel(
         if valor_original is None:
             continue
 
-        # Fórmula: mantém a fórmula original.
-# O multiplicador será aplicado somente aos valores originais.
-if (
-    isinstance(valor_original, str)
-    and valor_original.startswith("=")
-):
-    celula.value = valor_original
+        # Fórmula: mantém exatamente a fórmula original.
+        # O multiplicador será aplicado somente aos valores
+        # numéricos/preços originais.
+        if (
+            isinstance(valor_original, str)
+            and valor_original.startswith("=")
+        ):
+            formula_original = manter_formula_original(valor_original)
+            celula.value = formula_original
 
-    conferencias.append(
-        {
-            "Linha": numero_linha,
-            "Célula": celula.coordinate,
-            "Valor original": valor_original,
-            "Valor atualizado": valor_original,
-            "Tipo": "Fórmula mantida",
-        }
-    )
+            conferencias.append(
+                {
+                    "Linha": numero_linha,
+                    "Célula": celula.coordinate,
+                    "Valor original": valor_original,
+                    "Valor atualizado": formula_original,
+                    "Tipo": "Fórmula mantida",
+                }
+            )
 
-    continue
+            continue
 
         # Valor direto: multiplica e arredonda sempre para cima.
         if not parece_preco_excel(valor_original):
@@ -1045,10 +1045,9 @@ elif extensao == ".xlsx":
                 isinstance(valor_original, str)
                 and valor_original.startswith("=")
             ):
-                novo_valor = criar_formula_multiplicada(
-                    valor_original,
-                    multiplicador,
-                )
+                # Fórmulas são mantidas. O multiplicador será aplicado
+                # apenas aos valores originais que não são fórmulas.
+                novo_valor = manter_formula_original(valor_original)
             else:
                 valor_decimal = converter_valor_excel_para_decimal(
                     valor_original
