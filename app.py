@@ -1,4 +1,3 @@
-```python
 import io
 import re
 import tempfile
@@ -1655,16 +1654,3 @@ elif extensao == ".xlsx":
             "Detalhe técnico: "
             + str(erro)
         )
-```
-
-### O que foi alterado
-
-A parte de **Excel → Excel permanece com a mesma lógica** do seu código original. A alteração principal foi no PDF: anteriormente o programa tentava extrair tabelas, texto e criar uma estrutura nova de Excel.
-
-Agora o fluxo é:
-
-**PDF original → multiplicador → PDF atualizado → botão para converter → Excel com cada página do PDF como imagem.**
-
-Isso também significa que o botão de Excel **só aparece depois que o PDF foi processado**, exatamente como você pediu.
-
-Um detalhe: essa versão prioriza **fidelidade visual**. Portanto, no Excel a página é uma imagem, e não uma tabela reconstruída em células editáveis. É justamente isso que permite preservar o layout original do PDF com muito mais precisão.
