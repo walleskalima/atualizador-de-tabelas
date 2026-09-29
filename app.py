@@ -493,37 +493,25 @@ def atualizar_excel(
         if valor_original is None:
             continue
 
-        # Fórmula: mantém fórmula e multiplica resultado.
-        if (
-            isinstance(valor_original, str)
-            and valor_original.startswith("=")
-        ):
-            nova_formula = criar_formula_multiplicada(
-                valor_original,
-                multiplicador,
-            )
+        # Fórmula: mantém a fórmula original.
+# O multiplicador será aplicado somente aos valores originais.
+if (
+    isinstance(valor_original, str)
+    and valor_original.startswith("=")
+):
+    celula.value = valor_original
 
-            celula.value = nova_formula
+    conferencias.append(
+        {
+            "Linha": numero_linha,
+            "Célula": celula.coordinate,
+            "Valor original": valor_original,
+            "Valor atualizado": valor_original,
+            "Tipo": "Fórmula mantida",
+        }
+    )
 
-            formato_anterior = str(celula.number_format)
-
-            if (
-                "R$" in formato_anterior
-                or "$" in formato_anterior
-            ):
-                celula.number_format = "R$ #,##0"
-
-            conferencias.append(
-                {
-                    "Linha": numero_linha,
-                    "Célula": celula.coordinate,
-                    "Valor original": valor_original,
-                    "Valor atualizado": nova_formula,
-                    "Tipo": "Fórmula multiplicada",
-                }
-            )
-
-            continue
+    continue
 
         # Valor direto: multiplica e arredonda sempre para cima.
         if not parece_preco_excel(valor_original):
