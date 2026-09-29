@@ -453,9 +453,9 @@ def criar_formula_multiplicada(formula_original, multiplicador):
     formula_sem_igual = formula_original[1:].strip()
 
     return (
-        "=ROUNDUP(("
+        "=ROUNDUP("
         + formula_sem_igual
-        + ")*"
+        + "*"
         + str(multiplicador)
         + ",0)"
     )
