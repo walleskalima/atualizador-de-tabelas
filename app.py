@@ -1,33 +1,43 @@
 import io
-import math
 import re
-import tempfile
-from decimal import Decimal, ROUND_CEILING
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
 from pathlib import Path
 
 import pandas as pd
-import streamlit as st
 import pymupdf
-from PIL import Image as PILImage
-from openpyxl import Workbook, load_workbook
-from openpyxl.drawing.image import Image as ExcelImage
-from openpyxl.styles import Alignment, Font, PatternFill
+import streamlit as st
+from openpyxl import load_workbook
 
 
 st.set_page_config(
     page_title="Atualizador de Tabelas",
-    page_icon="📊",
+    page_icon="💰",
     layout="wide",
 )
 
-st.title("📊 Atualizador de preços")
-st.write(
-    "Envie uma tabela Excel ou PDF, informe o multiplicador, "
-    "escolha a coluna de preços e baixe o Excel atualizado."
+st.title("💰 Atualizador de preços")
+st.caption(
+    "PDF entra como PDF e sai como PDF. "
+    "Excel entra como Excel e sai como Excel."
 )
 
 
-def arredondar_para_cima(valor):
+# ==========================================================
+# CÁLCULO E FORMATAÇÃO DE PREÇOS
+# ==========================================================
+
+PADRAO_PRECO = re.compile(
+    r"R\$\s*\d{1,3}(?:\.\d{3})*,\d{2}"
+)
+
+
+def arredondar_sempre_para_cima(valor):
+    """
+    Exemplos:
+    10,01 -> 11
+    10,99 -> 11
+    20,00 -> 20
+    """
     return int(
         Decimal(str(valor)).quantize(
             Decimal("1"),
@@ -36,19 +46,358 @@ def arredondar_para_cima(valor):
     )
 
 
-def converter_texto_para_numero(valor):
+def texto_preco_para_decimal(texto_preco):
+    """
+    Converte:
+    R$ 926,82 -> Decimal('926.82')
+    R$ 1.073,88 -> Decimal('1073.88')
+    """
+    texto = texto_preco.upper().replace("R$", "").strip()
+    texto = texto.replace(".", "").replace(",", ".")
+
+    try:
+        return Decimal(texto)
+    except InvalidOperation:
+        return None
+
+
+def formatar_preco_brasileiro(valor_inteiro):
+    """
+    Converte:
+    2210 -> R$ 2.210
+    2561 -> R$ 2.561
+    """
+    numero = f"{valor_inteiro:,}"
+    numero = numero.replace(",", ".")
+    return f"R$ {numero}"
+
+
+def calcular_novo_preco(texto_preco, multiplicador):
+    """
+    Lê um preço no formato brasileiro, multiplica e arredonda para cima.
+    """
+    preco_original = texto_preco_para_decimal(texto_preco)
+
+    if preco_original is None:
+        return None
+
+    resultado = preco_original * Decimal(str(multiplicador))
+    preco_final = arredondar_sempre_para_cima(resultado)
+
+    return preco_final
+
+
+# ==========================================================
+# PDF -> PDF
+# ==========================================================
+
+def rgb_inteiro_para_tupla(cor):
+    """
+    O PyMuPDF pode entregar cor como inteiro RGB.
+    Converte para uma tupla entre 0 e 1.
+    """
+    if not isinstance(cor, int):
+        return (0, 0, 0)
+
+    vermelho = ((cor >> 16) & 255) / 255
+    verde = ((cor >> 8) & 255) / 255
+    azul = (cor & 255) / 255
+
+    return (vermelho, verde, azul)
+
+
+def buscar_spans_com_preco(pagina):
+    """
+    Procura preços dentro dos spans reais de texto do PDF.
+
+    Retorna:
+    - o texto do preço;
+    - a caixa de posição dele;
+    - tamanho de fonte;
+    - cor;
+    - nome de fonte;
+    """
+    encontrados = []
+
+    estrutura = pagina.get_text("dict")
+
+    for bloco in estrutura.get("blocks", []):
+        if bloco.get("type") != 0:
+            continue
+
+        for linha in bloco.get("lines", []):
+            for span in linha.get("spans", []):
+                texto_span = span.get("text", "")
+
+                if not texto_span:
+                    continue
+
+                for correspondencia in PADRAO_PRECO.finditer(texto_span):
+                    texto_preco = correspondencia.group(0)
+
+                    # Na grande maioria de catálogos, o preço vem em um span próprio.
+                    # Quando estiver dentro de um span maior, estima a posição do trecho.
+                    x0, y0, x1, y1 = span["bbox"]
+
+                    inicio = correspondencia.start()
+                    fim = correspondencia.end()
+                    tamanho_total = max(len(texto_span), 1)
+
+                    if inicio == 0 and fim == len(texto_span):
+                        caixa_preco = pymupdf.Rect(x0, y0, x1, y1)
+                    else:
+                        largura_span = x1 - x0
+                        x_inicio = x0 + (largura_span * inicio / tamanho_total)
+                        x_fim = x0 + (largura_span * fim / tamanho_total)
+
+                        caixa_preco = pymupdf.Rect(
+                            x_inicio,
+                            y0,
+                            x_fim,
+                            y1,
+                        )
+
+                    encontrados.append(
+                        {
+                            "texto_original": texto_preco,
+                            "rect": caixa_preco,
+                            "fonte": span.get("font", "helv"),
+                            "tamanho": span.get("size", 10),
+                            "cor": rgb_inteiro_para_tupla(
+                                span.get("color", 0)
+                            ),
+                        }
+                    )
+
+    return encontrados
+
+
+def escolher_fonte_pdf(nome_fonte_original):
+    """
+    Nem toda fonte incorporada no PDF pode ser reutilizada diretamente.
+    Usa fontes-base seguras do PDF.
+
+    Para preservar aparência:
+    - fonte com 'bold' usa Helvetica Bold;
+    - fonte com 'times' usa Times Roman;
+    - demais usam Helvetica.
+    """
+    nome = str(nome_fonte_original).lower()
+
+    if "bold" in nome:
+        return "hebo"
+
+    if "times" in nome:
+        return "tiro"
+
+    if "courier" in nome:
+        return "cour"
+
+    return "helv"
+
+
+def largura_texto(pagina, texto, fonte, tamanho):
+    """
+    Mede a largura real do novo texto no PDF.
+    """
+    try:
+        return pymupdf.get_text_length(
+            texto,
+            fontname=fonte,
+            fontsize=tamanho,
+        )
+    except Exception:
+        return len(texto) * tamanho * 0.55
+
+
+def atualizar_pdf_mantendo_layout(arquivo_pdf, multiplicador):
+    """
+    Atualiza preços diretamente no PDF.
+
+    Estratégia:
+    1. Localiza cada preço como texto.
+    2. Registra posição, tamanho e cor.
+    3. Faz uma redação branca somente no retângulo do preço.
+    4. Aplica a redação para remover de fato o texto antigo.
+    5. Insere o novo preço na mesma posição.
+    """
+    documento = pymupdf.open(
+        stream=arquivo_pdf,
+        filetype="pdf",
+    )
+
+    conferencias = []
+
+    for indice_pagina, pagina in enumerate(documento, start=1):
+        precos_pagina = buscar_spans_com_preco(pagina)
+        substituicoes = []
+
+        for item in precos_pagina:
+            preco_original_texto = item["texto_original"]
+            preco_final = calcular_novo_preco(
+                preco_original_texto,
+                multiplicador,
+            )
+
+            if preco_final is None:
+                continue
+
+            texto_novo = formatar_preco_brasileiro(preco_final)
+
+            caixa_original = item["rect"]
+            margem_x = 1.2
+            margem_y = 0.8
+
+            # A área é expandida só um pouco para não deixar restos do preço antigo.
+            caixa_redacao = pymupdf.Rect(
+                caixa_original.x0 - margem_x,
+                caixa_original.y0 - margem_y,
+                caixa_original.x1 + margem_x,
+                caixa_original.y1 + margem_y,
+            )
+
+            # A redação remove o texto do preço antigo.
+            # O preenchimento branco funciona para páginas de fundo branco/claro.
+            pagina.add_redact_annot(
+                caixa_redacao,
+                fill=(1, 1, 1),
+            )
+
+            substituicoes.append(
+                {
+                    "texto_original": preco_original_texto,
+                    "texto_novo": texto_novo,
+                    "caixa_original": caixa_original,
+                    "caixa_redacao": caixa_redacao,
+                    "fonte": escolher_fonte_pdf(item["fonte"]),
+                    "tamanho": item["tamanho"],
+                    "cor": item["cor"],
+                }
+            )
+
+        if not substituicoes:
+            continue
+
+        # Remove definitivamente apenas o texto dentro das caixas de preço.
+        # As imagens e vetores fora dessas caixas continuam no documento.
+        pagina.apply_redactions(
+            images=pymupdf.PDF_REDACT_IMAGE_NONE,
+            graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
+            text=pymupdf.PDF_REDACT_TEXT_REMOVE,
+        )
+
+        for item in substituicoes:
+            caixa_original = item["caixa_original"]
+            texto_novo = item["texto_novo"]
+            fonte = item["fonte"]
+            tamanho = item["tamanho"]
+            cor = item["cor"]
+
+            largura_original = caixa_original.width
+            largura_nova = largura_texto(
+                pagina,
+                texto_novo,
+                fonte,
+                tamanho,
+            )
+
+            # Mantém alinhamento:
+            # se o novo texto couber, conserva a posição à esquerda;
+            # se for maior, reduz até caber na área original.
+            tamanho_ajustado = tamanho
+
+            while (
+                largura_nova > largura_original
+                and tamanho_ajustado > 5
+            ):
+                tamanho_ajustado -= 0.2
+                largura_nova = largura_texto(
+                    pagina,
+                    texto_novo,
+                    fonte,
+                    tamanho_ajustado,
+                )
+
+            # Caixa levemente mais larga para não cortar o texto,
+            # mas mantém a mesma altura e linha do preço.
+            caixa_texto = pymupdf.Rect(
+                caixa_original.x0,
+                caixa_original.y0 - 0.5,
+                max(
+                    caixa_original.x1,
+                    caixa_original.x0 + largura_nova + 2,
+                ),
+                caixa_original.y1 + 1.5,
+            )
+
+            # insert_textbox mantém o texto dentro da área da posição original.
+            resultado = pagina.insert_textbox(
+                caixa_texto,
+                texto_novo,
+                fontname=fonte,
+                fontsize=tamanho_ajustado,
+                color=cor,
+                align=pymupdf.TEXT_ALIGN_LEFT,
+                overlay=True,
+            )
+
+            # Caso o textbox fique muito justo, usa escrita direta.
+            if resultado < 0:
+                pagina.insert_text(
+                    pymupdf.Point(
+                        caixa_original.x0,
+                        caixa_original.y1 - 1,
+                    ),
+                    texto_novo,
+                    fontname=fonte,
+                    fontsize=tamanho_ajustado,
+                    color=cor,
+                    overlay=True,
+                )
+
+            conferencias.append(
+                {
+                    "Página": indice_pagina,
+                    "Preço original": item["texto_original"],
+                    "Preço atualizado": item["texto_novo"],
+                    "Multiplicador": str(multiplicador),
+                }
+            )
+
+    resultado = io.BytesIO()
+
+    documento.save(
+        resultado,
+        garbage=4,
+        deflate=True,
+    )
+
+    documento.close()
+    resultado.seek(0)
+
+    return resultado.getvalue(), conferencias
+
+
+# ==========================================================
+# EXCEL -> EXCEL
+# ==========================================================
+
+def converter_valor_excel_para_decimal(valor):
+    """
+    Aceita números e textos monetários brasileiros.
+    """
     if valor is None:
         return None
 
-    if isinstance(valor, (int, float)):
-        return float(valor)
+    if isinstance(valor, (int, float, Decimal)):
+        return Decimal(str(valor))
 
     texto = str(valor).strip()
 
     if not texto:
         return None
 
-    texto = texto.replace("R$", "").replace("r$", "").strip()
+    texto = texto.upper().replace("R$", "").strip()
     texto = texto.replace(" ", "")
 
     if "," in texto and "." in texto:
@@ -56,385 +405,304 @@ def converter_texto_para_numero(valor):
     elif "," in texto:
         texto = texto.replace(",", ".")
 
-    texto = re.sub(r"[^0-9.\-]", "", texto)
-
-    if not texto:
-        return None
-
     try:
-        return float(texto)
-    except ValueError:
+        return Decimal(texto)
+    except InvalidOperation:
         return None
 
 
-def formatar_moeda(valor):
-    return f"R$ {valor:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-def parece_preco(valor):
-    if isinstance(valor, (int, float)):
+def parece_preco_excel(valor):
+    """
+    Evita modificar descrição, código, dimensão e medidas.
+    """
+    if isinstance(valor, (int, float, Decimal)):
         return True
 
     if not isinstance(valor, str):
         return False
 
-    texto = valor.strip().lower()
-
-    if "r$" in texto:
-        return True
-
-    padrao = r"^\s*\d{1,3}(\.\d{3})*(,\d{1,2})?\s*$"
-    return bool(re.match(padrao, texto))
-
-
-def atualizar_valor(valor_original, multiplicador):
-    numero = converter_texto_para_numero(valor_original)
-
-    if numero is None:
-        return None
-
-    novo_valor = arredondar_para_cima(numero * multiplicador)
-
-    if isinstance(valor_original, str):
-        if "R$" in valor_original.upper():
-            return formatar_moeda(novo_valor)
-
-        if "," in valor_original:
-            return f"{novo_valor:,.0f}".replace(",", ".")
-
-        return str(novo_valor)
-
-    return novo_valor
+    return bool(
+        re.match(
+            r"^\s*(R\$\s*)?\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?\s*$",
+            valor,
+        )
+    )
 
 
-def ler_cabecalhos(planilha, linha_cabecalho):
+def obter_cabecalhos(planilha, linha_cabecalho):
     cabecalhos = {}
 
-    for coluna in range(1, planilha.max_column + 1):
-        valor = planilha.cell(linha_cabecalho, coluna).value
+    for numero_coluna in range(1, planilha.max_column + 1):
+        valor = planilha.cell(
+            linha_cabecalho,
+            numero_coluna,
+        ).value
 
         if valor is not None and str(valor).strip():
-            cabecalhos[str(valor).strip()] = coluna
+            cabecalhos[str(valor).strip()] = numero_coluna
 
     return cabecalhos
 
 
 def atualizar_excel(
-    arquivo_bytes,
+    arquivo_excel,
     nome_aba,
     linha_cabecalho,
     numero_coluna,
     multiplicador,
 ):
+    """
+    Atualiza somente a coluna escolhida.
+    """
     workbook = load_workbook(
-        io.BytesIO(arquivo_bytes),
+        io.BytesIO(arquivo_excel),
         data_only=False,
         keep_links=True,
         rich_text=True,
     )
 
     planilha = workbook[nome_aba]
-    alteracoes = []
+    conferencias = []
 
-    for linha in range(linha_cabecalho + 1, planilha.max_row + 1):
-        celula = planilha.cell(linha, numero_coluna)
+    for numero_linha in range(
+        linha_cabecalho + 1,
+        planilha.max_row + 1,
+    ):
+        celula = planilha.cell(
+            numero_linha,
+            numero_coluna,
+        )
+
         valor_original = celula.value
 
         if valor_original is None:
             continue
 
-        if isinstance(valor_original, str) and valor_original.startswith("="):
+        if isinstance(valor_original, str):
+            if valor_original.startswith("="):
+                continue
+
+        if not parece_preco_excel(valor_original):
             continue
 
-        if not parece_preco(valor_original):
+        valor_decimal = converter_valor_excel_para_decimal(
+            valor_original
+        )
+
+        if valor_decimal is None:
             continue
 
-        novo_valor = atualizar_valor(valor_original, multiplicador)
+        novo_valor = arredondar_sempre_para_cima(
+            valor_decimal * Decimal(str(multiplicador))
+        )
 
-        if novo_valor is None or novo_valor == valor_original:
-            continue
+        # Se a célula original era texto com R$, preserva como texto.
+        if isinstance(valor_original, str) and "R$" in valor_original.upper():
+            celula.value = formatar_preco_brasileiro(novo_valor)
+        else:
+            celula.value = novo_valor
 
-        celula.value = novo_valor
-
-        if isinstance(novo_valor, (int, float)):
-            formato = celula.number_format or ""
-
-            if "R$" in formato or "[$R$" in formato:
-                celula.number_format = 'R$ #,##0'
-
-        alteracoes.append(
+        conferencias.append(
             {
-                "Linha": linha,
+                "Linha": numero_linha,
                 "Célula": celula.coordinate,
-                "Original": valor_original,
-                "Atualizado": novo_valor,
+                "Preço original": valor_original,
+                "Preço atualizado": celula.value,
             }
         )
 
-    arquivo_saida = io.BytesIO()
-    workbook.save(arquivo_saida)
-    arquivo_saida.seek(0)
+    resultado = io.BytesIO()
+    workbook.save(resultado)
+    resultado.seek(0)
 
-    return arquivo_saida.getvalue(), alteracoes
-
-
-def atualizar_precos_no_texto(texto, multiplicador):
-    padrao = r"R\$\s*([\d\.]+,\d{2})"
-
-    def substituir(match):
-        numero = converter_texto_para_numero(match.group(1))
-
-        if numero is None:
-            return match.group(0)
-
-        novo_valor = arredondar_para_cima(numero * multiplicador)
-        return formatar_moeda(novo_valor)
-
-    return re.sub(padrao, substituir, texto)
+    return resultado.getvalue(), conferencias
 
 
-def inserir_pagina_como_imagem(planilha, pagina):
-    pix = pagina.get_pixmap(
-        matrix=pymupdf.Matrix(1.5, 1.5),
-        alpha=False,
-    )
-
-    imagem = PILImage.open(io.BytesIO(pix.tobytes("png")))
-
-    arquivo_temporario = tempfile.NamedTemporaryFile(
-        suffix=".png",
-        delete=False,
-    )
-
-    imagem.save(arquivo_temporario.name, format="PNG")
-    arquivo_temporario.close()
-
-    imagem_excel = ExcelImage(arquivo_temporario.name)
-
-    largura_maxima = 1100
-
-    if imagem_excel.width > largura_maxima:
-        proporcao = largura_maxima / imagem_excel.width
-        imagem_excel.width = int(imagem_excel.width * proporcao)
-        imagem_excel.height = int(imagem_excel.height * proporcao)
-
-    planilha.add_image(imagem_excel, "A1")
-    planilha.column_dimensions["A"].width = 20
-
-
-def converter_pdf_para_excel(arquivo_bytes, multiplicador):
-    documento = pymupdf.open(
-        stream=arquivo_bytes,
-        filetype="pdf",
-    )
-
-    workbook = Workbook()
-    planilha_texto = workbook.active
-    planilha_texto.title = "Tabela editável"
-
-    titulos = ["Página", "Texto original", "Texto com valores atualizados"]
-
-    for coluna, titulo in enumerate(titulos, start=1):
-        celula = planilha_texto.cell(1, coluna, titulo)
-        celula.font = Font(bold=True, color="FFFFFF")
-        celula.fill = PatternFill("solid", fgColor="1F4E78")
-        celula.alignment = Alignment(
-            horizontal="center",
-            vertical="center",
-        )
-
-    planilha_texto.column_dimensions["A"].width = 12
-    planilha_texto.column_dimensions["B"].width = 70
-    planilha_texto.column_dimensions["C"].width = 70
-
-    linha_excel = 2
-    total_alteracoes = 0
-
-    for numero_pagina, pagina in enumerate(documento, start=1):
-        texto_pagina = pagina.get_text("text")
-        linhas = [
-            linha.strip()
-            for linha in texto_pagina.splitlines()
-            if linha.strip()
-        ]
-
-        for texto in linhas:
-            texto_atualizado = atualizar_precos_no_texto(
-                texto,
-                multiplicador,
-            )
-
-            if texto_atualizado != texto:
-                total_alteracoes += 1
-
-            planilha_texto.cell(linha_excel, 1, numero_pagina)
-            planilha_texto.cell(linha_excel, 2, texto)
-            planilha_texto.cell(linha_excel, 3, texto_atualizado)
-
-            for coluna in range(1, 4):
-                planilha_texto.cell(
-                    linha_excel,
-                    coluna,
-                ).alignment = Alignment(
-                    wrap_text=True,
-                    vertical="top",
-                )
-
-            linha_excel += 1
-
-        planilha_visual = workbook.create_sheet(
-            f"Visual - Página {numero_pagina}"
-        )
-        inserir_pagina_como_imagem(planilha_visual, pagina)
-
-    planilha_info = workbook.create_sheet("Informações")
-    planilha_info["A1"] = "Conversão de PDF para Excel"
-    planilha_info["A1"].font = Font(bold=True, size=14)
-
-    planilha_info["A3"] = "Multiplicador aplicado"
-    planilha_info["B3"] = multiplicador
-
-    planilha_info["A4"] = "Arredondamento"
-    planilha_info["B4"] = "Sempre para cima"
-
-    planilha_info["A6"] = "Observação"
-    planilha_info["B6"] = (
-        "A aba 'Tabela editável' traz o conteúdo extraído e atualizado. "
-        "As abas 'Visual - Página N' mantêm cada página do PDF como imagem, "
-        "preservando o visual, fotos, logos e disposição geral."
-    )
-
-    planilha_info.column_dimensions["A"].width = 28
-    planilha_info.column_dimensions["B"].width = 100
-    planilha_info["B6"].alignment = Alignment(wrap_text=True)
-
-    arquivo_saida = io.BytesIO()
-    workbook.save(arquivo_saida)
-    arquivo_saida.seek(0)
-
-    return arquivo_saida.getvalue(), total_alteracoes
-
+# ==========================================================
+# TELA DO APLICATIVO
+# ==========================================================
 
 arquivo = st.file_uploader(
-    "Envie uma tabela Excel ou PDF",
-    type=["xlsx", "pdf"],
+    "Envie um PDF ou Excel",
+    type=["pdf", "xlsx"],
 )
 
 multiplicador = st.number_input(
-    "Valor para multiplicar os preços",
+    "Multiplicador de preço",
     min_value=0.000001,
     value=2.383949988,
     step=0.000001,
     format="%.9f",
+    help=(
+        "O novo preço será o valor original multiplicado por este fator "
+        "e arredondado sempre para cima."
+    ),
 )
 
 if arquivo is None:
     st.info("Envie um arquivo para começar.")
     st.stop()
 
-extensao = Path(arquivo.name).suffix.lower()
-conteudo_arquivo = arquivo.getvalue()
+nome_arquivo = arquivo.name
+extensao = Path(nome_arquivo).suffix.lower()
+conteudo = arquivo.getvalue()
 
-if extensao == ".xlsx":
-    workbook_preview = load_workbook(
-        io.BytesIO(conteudo_arquivo),
-        data_only=False,
-        keep_links=True,
-        rich_text=True,
+
+# ==========================================================
+# INTERFACE DE PDF
+# ==========================================================
+
+if extensao == ".pdf":
+    st.subheader("PDF → PDF")
+    st.info(
+        "O arquivo final será outro PDF. "
+        "Fotos, imagens, páginas, descrições e a estrutura original "
+        "permanecem no documento. Apenas os preços identificados no "
+        "formato R$ 0,00 são substituídos."
     )
 
-    aba = st.selectbox(
-        "Escolha a aba da tabela",
-        workbook_preview.sheetnames,
-    )
+    if st.button(
+        "Gerar PDF com preços atualizados",
+        type="primary",
+    ):
+        try:
+            with st.spinner(
+                "Localizando preços e criando o PDF atualizado..."
+            ):
+                resultado, conferencias = atualizar_pdf_mantendo_layout(
+                    conteudo,
+                    multiplicador,
+                )
 
-    planilha_preview = workbook_preview[aba]
+            if not conferencias:
+                st.warning(
+                    "Nenhum preço foi identificado. "
+                    "Isso pode acontecer se o PDF for escaneado como imagem "
+                    "ou se os preços não estiverem no formato R$ 0,00."
+                )
+                st.stop()
 
-    linha_cabecalho = st.number_input(
-        "Em qual linha estão os títulos das colunas?",
-        min_value=1,
-        max_value=max(1, planilha_preview.max_row),
-        value=1,
-        step=1,
-    )
-
-    cabecalhos = ler_cabecalhos(
-        planilha_preview,
-        linha_cabecalho,
-    )
-
-    if not cabecalhos:
-        st.error(
-            "Não foi possível identificar os títulos nessa linha. "
-            "Tente escolher outra linha."
-        )
-        st.stop()
-
-    nome_coluna = st.selectbox(
-        "Escolha a coluna de preço/valor",
-        list(cabecalhos.keys()),
-    )
-
-    numero_coluna = cabecalhos[nome_coluna]
-
-    if st.button("Gerar Excel atualizado", type="primary"):
-        with st.spinner("Atualizando valores..."):
-            resultado, alteracoes = atualizar_excel(
-                conteudo_arquivo,
-                aba,
-                linha_cabecalho,
-                numero_coluna,
-                multiplicador,
+            st.success(
+                f"PDF pronto. {len(conferencias)} preço(s) foram atualizados."
             )
 
-        st.success(
-            f"Pronto. Foram atualizados {len(alteracoes)} valor(es)."
-        )
-
-        if alteracoes:
+            st.subheader("Conferência das alterações")
             st.dataframe(
-                pd.DataFrame(alteracoes),
+                pd.DataFrame(conferencias),
                 use_container_width=True,
                 hide_index=True,
             )
 
-        nome_saida = f"{Path(arquivo.name).stem}_atualizado.xlsx"
-
-        st.download_button(
-            label="⬇️ Baixar Excel atualizado",
-            data=resultado,
-            file_name=nome_saida,
-            mime=(
-                "application/vnd.openxmlformats-officedocument."
-                "spreadsheetml.sheet"
-            ),
-        )
-
-elif extensao == ".pdf":
-    st.warning(
-        "PDFs podem ter tabelas, fotos, logos e textos em posições diferentes. "
-        "O resultado terá uma aba editável e abas visuais com as páginas originais."
-    )
-
-    if st.button("Converter PDF e atualizar valores", type="primary"):
-        with st.spinner("Convertendo o PDF..."):
-            resultado, alteracoes = converter_pdf_para_excel(
-                conteudo_arquivo,
-                multiplicador,
+            nome_saida = (
+                f"{Path(nome_arquivo).stem}_precos_atualizados.pdf"
             )
 
-        st.success(
-            f"Pronto. Foram identificadas {alteracoes} linha(s) com valores monetários."
+            st.download_button(
+                label="⬇️ Baixar PDF atualizado",
+                data=resultado,
+                file_name=nome_saida,
+                mime="application/pdf",
+            )
+
+        except Exception as erro:
+            st.error(
+                "Não foi possível processar o PDF. "
+                f"Detalhe técnico: {erro}"
+            )
+
+
+# ==========================================================
+# INTERFACE DE EXCEL
+# ==========================================================
+
+elif extensao == ".xlsx":
+    st.subheader("Excel → Excel")
+
+    try:
+        workbook_preview = load_workbook(
+            io.BytesIO(conteudo),
+            data_only=False,
+            keep_links=True,
+            rich_text=True,
         )
 
-        nome_saida = f"{Path(arquivo.name).stem}_convertido.xlsx"
+        nome_aba = st.selectbox(
+            "Escolha a aba que contém os preços",
+            workbook_preview.sheetnames,
+        )
 
-        st.download_button(
-            label="⬇️ Baixar Excel convertido",
-            data=resultado,
-            file_name=nome_saida,
-            mime=(
-                "application/vnd.openxmlformats-officedocument."
-                "spreadsheetml.sheet"
-            ),
+        planilha_preview = workbook_preview[nome_aba]
+
+        linha_cabecalho = st.number_input(
+            "Número da linha dos títulos das colunas",
+            min_value=1,
+            max_value=max(1, planilha_preview.max_row),
+            value=1,
+            step=1,
+        )
+
+        cabecalhos = obter_cabecalhos(
+            planilha_preview,
+            linha_cabecalho,
+        )
+
+        if not cabecalhos:
+            st.error(
+                "Não foram encontrados títulos nessa linha. "
+                "Escolha outra linha para o cabeçalho."
+            )
+            st.stop()
+
+        nome_coluna = st.selectbox(
+            "Escolha a coluna de preço ou valor",
+            list(cabecalhos.keys()),
+        )
+
+        numero_coluna = cabecalhos[nome_coluna]
+
+        if st.button(
+            "Gerar Excel com preços atualizados",
+            type="primary",
+        ):
+            with st.spinner(
+                "Atualizando somente a coluna selecionada..."
+            ):
+                resultado, conferencias = atualizar_excel(
+                    conteudo,
+                    nome_aba,
+                    linha_cabecalho,
+                    numero_coluna,
+                    multiplicador,
+                )
+
+            st.success(
+                f"Excel pronto. {len(conferencias)} valor(es) foram atualizados."
+            )
+
+            if conferencias:
+                st.subheader("Conferência das alterações")
+                st.dataframe(
+                    pd.DataFrame(conferencias),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            nome_saida = (
+                f"{Path(nome_arquivo).stem}_precos_atualizados.xlsx"
+            )
+
+            st.download_button(
+                label="⬇️ Baixar Excel atualizado",
+                data=resultado,
+                file_name=nome_saida,
+                mime=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "spreadsheetml.sheet"
+                ),
+            )
+
+    except Exception as erro:
+        st.error(
+            "Não foi possível abrir este Excel. "
+            f"Detalhe técnico: {erro}"
         )
