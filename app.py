@@ -827,4 +827,5 @@ elif extensao == ".xlsx":
     except Exception as erro:
         st.error(
             "Não foi possível abrir ou salvar este Excel. "
-            f"Detalhe técnico:
+            f"Detalhe técnico: {erro}"
+        )
