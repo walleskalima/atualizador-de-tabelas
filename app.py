@@ -55,7 +55,7 @@ def arredondar_sempre_para_cima(valor):
 
 def texto_preco_para_decimal(texto_preco):
     """
-    Converte:
+    Exemplos:
     R$ 926,82 -> Decimal("926.82")
     R$ 1.073,88 -> Decimal("1073.88")
     """
@@ -71,8 +71,9 @@ def texto_preco_para_decimal(texto_preco):
 
 def formatar_preco_brasileiro(valor_inteiro):
     """
-    Converte:
+    Exemplos:
     2210 -> R$ 2.210
+    2561 -> R$ 2.561
     """
     numero = f"{valor_inteiro:,}"
     numero = numero.replace(",", ".")
@@ -81,8 +82,7 @@ def formatar_preco_brasileiro(valor_inteiro):
 
 def calcular_novo_preco(texto_preco, multiplicador):
     """
-    Novo preço:
-    teto(preço original x multiplicador)
+    Novo preço = teto(preço original x multiplicador)
     """
     valor_original = texto_preco_para_decimal(texto_preco)
 
@@ -100,7 +100,7 @@ def calcular_novo_preco(texto_preco, multiplicador):
 
 def rgb_inteiro_para_tupla(cor):
     """
-    Converte inteiro RGB do PyMuPDF em tupla RGB de 0 a 1.
+    Converte uma cor RGB inteira do PyMuPDF para uma tupla RGB.
     """
     if not isinstance(cor, int):
         return (0, 0, 0)
@@ -114,7 +114,7 @@ def rgb_inteiro_para_tupla(cor):
 
 def escolher_fonte_pdf(nome_fonte_original):
     """
-    Escolhe fonte PDF padrão para reescrever preços.
+    Seleciona uma fonte padrão de PDF para reescrever o valor.
     """
     nome = str(nome_fonte_original).lower()
 
@@ -132,7 +132,7 @@ def escolher_fonte_pdf(nome_fonte_original):
 
 def medir_largura_texto(texto, fonte, tamanho):
     """
-    Mede largura aproximada do novo texto.
+    Mede a largura aproximada de um texto em PDF.
     """
     try:
         return pymupdf.get_text_length(
@@ -146,7 +146,7 @@ def medir_largura_texto(texto, fonte, tamanho):
 
 def localizar_precos_na_pagina(pagina):
     """
-    Encontra preços como:
+    Localiza valores como:
     R$ 926,82
     R$ 1.073,88
     """
@@ -220,8 +220,7 @@ def localizar_precos_na_pagina(pagina):
 
 def colocar_fundo_branco(pagina):
     """
-    Coloca uma camada branca atrás do conteúdo existente.
-    Não cobre fotos, textos ou logos que já estejam na página.
+    Coloca uma camada branca atrás dos elementos existentes da página.
     """
     pagina.draw_rect(
         pagina.rect,
@@ -237,7 +236,7 @@ def atualizar_pdf_mantendo_layout(
     deixar_fundo_branco=True,
 ):
     """
-    Mantém PDF como PDF e altera somente os valores monetários encontrados.
+    Mantém o arquivo como PDF e altera somente os preços localizados.
     """
     documento = pymupdf.open(
         stream=arquivo_pdf,
@@ -390,7 +389,7 @@ def atualizar_pdf_mantendo_layout(
 
 def converter_valor_excel_para_decimal(valor):
     """
-    Aceita números e valores no padrão brasileiro:
+    Aceita:
     926.82
     926,82
     1.073,88
@@ -423,8 +422,7 @@ def converter_valor_excel_para_decimal(valor):
 
 def parece_preco_excel(valor):
     """
-    Aceita apenas números ou valores monetários.
-    Não altera textos como 45cm, 140/160cm ou ABC-123.
+    Aceita números e preços, evitando alterar medidas/códigos.
     """
     if isinstance(valor, (int, float, Decimal)):
         return True
@@ -443,6 +441,26 @@ def parece_preco_excel(valor):
     return bool(re.match(padrao, valor))
 
 
+def criar_formula_multiplicada(formula_original, multiplicador):
+    """
+    OPÇÃO 2:
+    multiplica o resultado total da fórmula e arredonda para cima.
+
+    =E5+100
+    vira:
+    =ROUNDUP((E5+100)*2.383949988,0)
+    """
+    formula_sem_igual = formula_original[1:].strip()
+
+    return (
+        "=ROUNDUP(("
+        + formula_sem_igual
+        + ")*"
+        + str(multiplicador)
+        + ",0)"
+    )
+
+
 def atualizar_excel(
     arquivo_excel,
     nome_aba,
@@ -451,9 +469,14 @@ def atualizar_excel(
     multiplicador,
 ):
     """
-    Atualiza apenas uma coluna, escolhida por letra.
+    Atualiza somente a coluna escolhida pela letra.
 
-    Não usa título nem cabeçalho de coluna.
+    Para números:
+    valor novo = teto(valor x multiplicador)
+
+    Para fórmulas:
+    aplica a opção 2:
+    teto(resultado da fórmula x multiplicador)
     """
     workbook = load_workbook(
         io.BytesIO(arquivo_excel),
@@ -479,12 +502,43 @@ def atualizar_excel(
         if valor_original is None:
             continue
 
+        # --------------------------------------------------
+        # FÓRMULA: OPÇÃO 2
+        # --------------------------------------------------
         if (
             isinstance(valor_original, str)
             and valor_original.startswith("=")
         ):
+            nova_formula = criar_formula_multiplicada(
+                valor_original,
+                multiplicador,
+            )
+
+            celula.value = nova_formula
+
+            formato_anterior = str(celula.number_format)
+
+            if (
+                "R$" in formato_anterior
+                or "$" in formato_anterior
+            ):
+                celula.number_format = "R$ #,##0"
+
+            conferencias.append(
+                {
+                    "Linha": numero_linha,
+                    "Célula": celula.coordinate,
+                    "Valor original": valor_original,
+                    "Valor atualizado": nova_formula,
+                    "Tipo": "Fórmula multiplicada",
+                }
+            )
+
             continue
 
+        # --------------------------------------------------
+        # NÚMERO OU PREÇO DIRETO
+        # --------------------------------------------------
         if not parece_preco_excel(valor_original):
             continue
 
@@ -511,7 +565,10 @@ def atualizar_excel(
 
             formato_anterior = str(celula.number_format)
 
-            if "R$" in formato_anterior or "$" in formato_anterior:
+            if (
+                "R$" in formato_anterior
+                or "$" in formato_anterior
+            ):
                 celula.number_format = "R$ #,##0"
 
         conferencias.append(
@@ -520,6 +577,7 @@ def atualizar_excel(
                 "Célula": celula.coordinate,
                 "Valor original": valor_original,
                 "Valor atualizado": celula.value,
+                "Tipo": "Valor multiplicado",
             }
         )
 
@@ -535,9 +593,6 @@ def atualizar_excel(
 # ==========================================================
 
 def criar_cabecalho(planilha, titulos):
-    """
-    Cria cabeçalho simples para abas extraídas.
-    """
     for numero_coluna, titulo in enumerate(titulos, start=1):
         celula = planilha.cell(
             1,
@@ -564,7 +619,7 @@ def criar_cabecalho(planilha, titulos):
 
 def inserir_pagina_pdf_como_imagem(planilha, pagina):
     """
-    Mantém uma cópia visual da página PDF no Excel.
+    Insere cópia visual da página no Excel.
     """
     pix = pagina.get_pixmap(
         matrix=pymupdf.Matrix(1.4, 1.4),
@@ -609,7 +664,7 @@ def adicionar_tabela_extraida(
     numero_pagina,
 ):
     """
-    Copia a tabela detectada para células editáveis no Excel.
+    Copia tabela detectada do PDF para células editáveis.
     """
     dados = tabela.extract()
 
@@ -658,10 +713,10 @@ def adicionar_tabela_extraida(
 
 def converter_pdf_para_excel(arquivo_pdf):
     """
-    Cria um Excel com:
-    - Tabelas extraídas
-    - Texto por página
-    - Uma aba visual para cada página do PDF
+    Cria Excel com:
+    - tabelas extraídas;
+    - texto editável por página;
+    - imagem visual de cada página original.
     """
     documento = pymupdf.open(
         stream=arquivo_pdf,
@@ -770,10 +825,10 @@ def converter_pdf_para_excel(arquivo_pdf):
     planilha_info["A5"].font = Font(bold=True)
 
     planilha_info["B5"] = (
-        "A aba 'Tabelas extraídas' contém tabelas reconhecidas "
-        "automaticamente. A aba 'Texto por página' contém conteúdo "
-        "editável. As abas 'Visual página N' preservam fotos, logos, "
-        "cores e o layout como imagem."
+        "A aba 'Tabelas extraídas' contém tabelas reconhecidas. "
+        "A aba 'Texto por página' contém conteúdo editável. "
+        "As abas 'Visual página N' preservam o visual original "
+        "como imagem, incluindo fotos, logos, cores e layout."
     )
 
     planilha_info["B5"].alignment = Alignment(
@@ -860,7 +915,7 @@ if extensao == ".pdf":
                 if not conferencias:
                     st.warning(
                         "Nenhum preço foi identificado. "
-                        "O PDF pode ser escaneado ou usar outro padrão."
+                        "O PDF pode ser escaneado ou usar outro formato."
                     )
                     st.stop()
 
@@ -938,7 +993,7 @@ if extensao == ".pdf":
 
 
 # ==========================================================
-# TELA EXCEL — SEM TÍTULOS DE COLUNA
+# TELA EXCEL — SEM TÍTULO DE COLUNA
 # ==========================================================
 
 elif extensao == ".xlsx":
@@ -971,7 +1026,7 @@ elif extensao == ".xlsx":
             value=1,
             step=1,
             help=(
-                "Exemplo: se o primeiro preço estiver na linha 5, informe 5."
+                "Exemplo: se o primeiro preço estiver em E5, informe 5."
             ),
         )
 
@@ -1001,9 +1056,9 @@ elif extensao == ".xlsx":
         st.caption(
             "Coluna selecionada: "
             + letra_coluna
-            + ". Apenas valores a partir da linha "
+            + ". Serão analisadas apenas as células a partir da linha "
             + str(linha_inicio)
-            + " serão analisados."
+            + "."
         )
 
         dados_previa = []
@@ -1023,16 +1078,27 @@ elif extensao == ".xlsx":
             if valor_original is None:
                 continue
 
-            valor_decimal = converter_valor_excel_para_decimal(
-                valor_original
-            )
-
-            if valor_decimal is None:
-                novo_valor = "Não será alterado"
-            else:
-                novo_valor = arredondar_sempre_para_cima(
-                    valor_decimal * Decimal(str(multiplicador))
+            # Mostra na prévia como uma fórmula será transformada.
+            if (
+                isinstance(valor_original, str)
+                and valor_original.startswith("=")
+            ):
+                novo_valor = criar_formula_multiplicada(
+                    valor_original,
+                    multiplicador,
                 )
+
+            else:
+                valor_decimal = converter_valor_excel_para_decimal(
+                    valor_original
+                )
+
+                if valor_decimal is None:
+                    novo_valor = "Não será alterado"
+                else:
+                    novo_valor = arredondar_sempre_para_cima(
+                        valor_decimal * Decimal(str(multiplicador))
+                    )
 
             dados_previa.append(
                 {
@@ -1053,7 +1119,7 @@ elif extensao == ".xlsx":
         else:
             st.warning(
                 "Não foram encontrados valores nas primeiras linhas "
-                "dessa coluna. Confira a letra da coluna e a linha inicial."
+                "dessa coluna. Confira a letra e a linha inicial."
             )
 
         if st.button(
@@ -1081,7 +1147,7 @@ elif extensao == ".xlsx":
             st.success(
                 "Excel pronto. "
                 + str(len(conferencias))
-                + " valor(es) atualizado(s)."
+                + " valor(es) ou fórmula(s) atualizado(s)."
             )
 
             st.subheader("Conferência")
