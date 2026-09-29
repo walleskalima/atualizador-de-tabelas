@@ -226,6 +226,14 @@ def atualizar_pdf_mantendo_layout(arquivo_pdf, multiplicador):
         filetype="pdf",
     )
 
+    for pagina in documento:
+    pagina.draw_rect(
+        pagina.rect,
+        color=None,
+        fill=(1, 1, 1),
+        overlay=False,
+    )
+
     conferencias = []
 
     for indice_pagina, pagina in enumerate(documento, start=1):
