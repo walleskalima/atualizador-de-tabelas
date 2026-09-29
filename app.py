@@ -211,37 +211,30 @@ def largura_texto(pagina, texto, fonte, tamanho):
 
 
 def atualizar_pdf_mantendo_layout(arquivo_pdf, multiplicador):
-    """
-    Atualiza preços diretamente no PDF.
-
-    Estratégia:
-    1. Localiza cada preço como texto.
-    2. Registra posição, tamanho e cor.
-    3. Faz uma redação branca somente no retângulo do preço.
-    4. Aplica a redação para remover de fato o texto antigo.
-    5. Insere o novo preço na mesma posição.
-    """
     documento = pymupdf.open(
         stream=arquivo_pdf,
         filetype="pdf",
     )
 
+    # Fundo branco atrás do conteúdo existente.
     for pagina in documento:
-    pagina.draw_rect(
-        pagina.rect,
-        color=None,
-        fill=(1, 1, 1),
-        overlay=False,
-    )
+        pagina.draw_rect(
+            pagina.rect,
+            color=None,
+            fill=(1, 1, 1),
+            overlay=False,
+        )
 
     conferencias = []
 
+    # Loop que encontra e altera os preços.
     for indice_pagina, pagina in enumerate(documento, start=1):
         precos_pagina = buscar_spans_com_preco(pagina)
         substituicoes = []
 
         for item in precos_pagina:
             preco_original_texto = item["texto_original"]
+
             preco_final = calcular_novo_preco(
                 preco_original_texto,
                 multiplicador,
@@ -251,6 +244,9 @@ def atualizar_pdf_mantendo_layout(arquivo_pdf, multiplicador):
                 continue
 
             texto_novo = formatar_preco_brasileiro(preco_final)
+
+            # O restante do seu código continua aqui,
+            # sempre com a mesma indentação deste bloco.
 
             caixa_original = item["rect"]
             margem_x = 1.2
