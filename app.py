@@ -443,30 +443,19 @@ def atualizar_excel(
     arquivo_excel,
     nome_aba,
     linha_inicio,
-    numero_coluna,
+    numeros_colunas,
     multiplicador,
 ):
     """
-    Atualiza uma coluna escolhida pela letra.
+    Atualiza várias colunas escolhidas.
 
     Valores diretos:
     teto(valor x multiplicador)
 
     Fórmulas:
     mantém a fórmula original sem multiplicá-la.
-
-    Isso é importante quando, por exemplo:
-
-    E80 = 3061,98
-    E81 = E80/3
-
-    Após a atualização:
-
-    E80 = 7300 (considerando o arredondamento para cima)
-    E81 = E80/3
-
-    Assim, a fórmula continua calculando 1/3 do novo valor de E80.
     """
+
     workbook = load_workbook(
         io.BytesIO(arquivo_excel),
         data_only=False,
@@ -477,87 +466,100 @@ def atualizar_excel(
     planilha = workbook[nome_aba]
     conferencias = []
 
-    for numero_linha in range(
-        linha_inicio,
-        planilha.max_row + 1,
-    ):
-        celula = planilha.cell(
-            numero_linha,
-            numero_coluna,
-        )
+    for numero_coluna in numeros_colunas:
 
-        valor_original = celula.value
-
-        if valor_original is None:
-            continue
-
-        # Fórmula: mantém exatamente a fórmula original.
-        # O multiplicador será aplicado somente aos valores
-        # numéricos/preços originais.
-        if (
-            isinstance(valor_original, str)
-            and valor_original.startswith("=")
+        for numero_linha in range(
+            linha_inicio,
+            planilha.max_row + 1,
         ):
-            formula_original = manter_formula_original(valor_original)
-            celula.value = formula_original
+            celula = planilha.cell(
+                numero_linha,
+                numero_coluna,
+            )
+
+            valor_original = celula.value
+
+            if valor_original is None:
+                continue
+
+            # Fórmula: mantém exatamente como está.
+            if (
+                isinstance(valor_original, str)
+                and valor_original.startswith("=")
+            ):
+                formula_original = manter_formula_original(
+                    valor_original
+                )
+
+                celula.value = formula_original
+
+                conferencias.append(
+                    {
+                        "Linha": numero_linha,
+                        "Célula": celula.coordinate,
+                        "Valor original": valor_original,
+                        "Valor atualizado": formula_original,
+                        "Tipo": "Fórmula mantida",
+                    }
+                )
+
+                continue
+
+            # Valor direto
+            if not parece_preco_excel(valor_original):
+                continue
+
+            valor_decimal = converter_valor_excel_para_decimal(
+                valor_original
+            )
+
+            if valor_decimal is None:
+                continue
+
+            novo_valor = arredondar_sempre_para_cima(
+                valor_decimal
+                * Decimal(str(multiplicador))
+            )
+
+            if (
+                isinstance(valor_original, str)
+                and "R$" in valor_original.upper()
+            ):
+                celula.value = formatar_preco_brasileiro(
+                    novo_valor
+                )
+            else:
+                celula.value = novo_valor
+
+                formato_anterior = str(
+                    celula.number_format
+                )
+
+                if (
+                    "R$" in formato_anterior
+                    or "$" in formato_anterior
+                ):
+                    celula.number_format = "R$ #,##0"
 
             conferencias.append(
                 {
                     "Linha": numero_linha,
                     "Célula": celula.coordinate,
                     "Valor original": valor_original,
-                    "Valor atualizado": formula_original,
-                    "Tipo": "Fórmula mantida",
+                    "Valor atualizado": celula.value,
+                    "Tipo": "Valor multiplicado",
                 }
             )
 
-            continue
-
-        # Valor direto: multiplica e arredonda sempre para cima.
-        if not parece_preco_excel(valor_original):
-            continue
-
-        valor_decimal = converter_valor_excel_para_decimal(
-            valor_original
-        )
-
-        if valor_decimal is None:
-            continue
-
-        novo_valor = arredondar_sempre_para_cima(
-            valor_decimal * Decimal(str(multiplicador))
-        )
-
-        if (
-            isinstance(valor_original, str)
-            and "R$" in valor_original.upper()
-        ):
-            celula.value = formatar_preco_brasileiro(
-                novo_valor
-            )
-        else:
-            celula.value = novo_valor
-
-            formato_anterior = str(celula.number_format)
-
-            if (
-                "R$" in formato_anterior
-                or "$" in formato_anterior
-            ):
-                celula.number_format = "R$ #,##0"
-
-        conferencias.append(
-            {
-                "Linha": numero_linha,
-                "Célula": celula.coordinate,
-                "Valor original": valor_original,
-                "Valor atualizado": celula.value,
-                "Tipo": "Valor multiplicado",
-            }
-        )
+    # Faz o Excel recalcular as fórmulas ao abrir
+    workbook.calculation.fullCalcOnLoad = True
+    workbook.calculation.forceFullCalc = True
+    workbook.calculation.calcMode = "auto"
 
     arquivo_final = io.BytesIO()
+
     workbook.save(arquivo_final)
+
     arquivo_final.seek(0)
 
     return arquivo_final.getvalue(), conferencias
@@ -964,7 +966,8 @@ elif extensao == ".xlsx":
 
     st.info(
         "Não é necessário haver título de coluna. "
-        "Escolha a aba, a primeira linha de valores e a letra da coluna."
+        "Escolha a aba, a primeira linha de valores "
+        "e uma ou mais colunas."
     )
 
     try:
@@ -985,11 +988,15 @@ elif extensao == ".xlsx":
         linha_inicio = st.number_input(
             "2. Linha onde começam os preços",
             min_value=1,
-            max_value=max(1, planilha_preview.max_row),
+            max_value=max(
+                1,
+                planilha_preview.max_row,
+            ),
             value=1,
             step=1,
             help=(
-                "Exemplo: se o primeiro preço estiver em E5, informe 5."
+                "Exemplo: se o primeiro preço estiver "
+                "em E5, informe 5."
             ),
         )
 
@@ -1004,103 +1011,171 @@ elif extensao == ".xlsx":
         letras_colunas_selecionadas = st.multiselect(
             "3. Escolha as colunas que deseja alterar",
             letras_colunas,
-            default=["E"] if "E" in letras_colunas else [],
+            default=(
+                ["E"]
+                if "E" in letras_colunas
+                else []
+            ),
         )
 
-        numero_coluna = 0
+        if not letras_colunas_selecionadas:
+            st.warning(
+                "Selecione pelo menos uma coluna."
+            )
+            st.stop()
 
-        for caractere in letra_coluna:
-            numero_coluna = (
-                numero_coluna * 26
-                + ord(caractere)
-                - ord("A")
-                + 1
+        # Converte letras para números
+        numeros_colunas = []
+
+        for letra in letras_colunas_selecionadas:
+
+            numero_coluna = 0
+
+            for caractere in letra:
+                numero_coluna = (
+                    numero_coluna * 26
+                    + ord(caractere)
+                    - ord("A")
+                    + 1
+                )
+
+            numeros_colunas.append(
+                numero_coluna
             )
 
         st.caption(
-            "Coluna selecionada: "
-            + letra_coluna
-            + ". Serão analisadas apenas as células a partir da linha "
+            "Colunas selecionadas: "
+            + ", ".join(
+                letras_colunas_selecionadas
+            )
+            + ". Serão analisadas a partir da linha "
             + str(linha_inicio)
             + "."
         )
 
+        # ==================================================
+        # PRÉVIA
+        # ==================================================
+
         dados_previa = []
 
-        for numero_linha in range(
-            linha_inicio,
-            min(
-                planilha_preview.max_row + 1,
-                linha_inicio + 10,
-            ),
+        for letra_coluna, numero_coluna in zip(
+            letras_colunas_selecionadas,
+            numeros_colunas,
         ):
-            valor_original = planilha_preview.cell(
-                numero_linha,
-                numero_coluna,
-            ).value
 
-            if valor_original is None:
-                continue
-
-            if (
-                isinstance(valor_original, str)
-                and valor_original.startswith("=")
+            for numero_linha in range(
+                linha_inicio,
+                min(
+                    planilha_preview.max_row + 1,
+                    linha_inicio + 10,
+                ),
             ):
-                # Fórmulas são mantidas. O multiplicador será aplicado
-                # apenas aos valores originais que não são fórmulas.
-                novo_valor = manter_formula_original(valor_original)
-            else:
-                valor_decimal = converter_valor_excel_para_decimal(
-                    valor_original
+
+                valor_original = (
+                    planilha_preview.cell(
+                        numero_linha,
+                        numero_coluna,
+                    ).value
                 )
 
-                if valor_decimal is None:
-                    novo_valor = "Não será alterado"
-                else:
-                    novo_valor = arredondar_sempre_para_cima(
-                        valor_decimal * Decimal(str(multiplicador))
+                if valor_original is None:
+                    continue
+
+                # Fórmula
+                if (
+                    isinstance(
+                        valor_original,
+                        str,
+                    )
+                    and valor_original.startswith("=")
+                ):
+                    novo_valor = (
+                        manter_formula_original(
+                            valor_original
+                        )
                     )
 
-            dados_previa.append(
-                {
-                    "Linha": numero_linha,
-                    "Célula": letra_coluna + str(numero_linha),
-                    "Valor original": valor_original,
-                    "Novo valor": novo_valor,
-                }
-            )
+                else:
+                    valor_decimal = (
+                        converter_valor_excel_para_decimal(
+                            valor_original
+                        )
+                    )
+
+                    if valor_decimal is None:
+                        novo_valor = (
+                            "Não será alterado"
+                        )
+                    else:
+                        novo_valor = (
+                            arredondar_sempre_para_cima(
+                                valor_decimal
+                                * Decimal(
+                                    str(multiplicador)
+                                )
+                            )
+                        )
+
+                dados_previa.append(
+                    {
+                        "Coluna": letra_coluna,
+                        "Linha": numero_linha,
+                        "Célula": (
+                            letra_coluna
+                            + str(numero_linha)
+                        ),
+                        "Valor original": valor_original,
+                        "Novo valor": novo_valor,
+                    }
+                )
 
         if dados_previa:
             st.subheader("Prévia")
+
             st.dataframe(
                 pd.DataFrame(dados_previa),
                 use_container_width=True,
                 hide_index=True,
             )
+
         else:
             st.warning(
-                "Nenhum valor foi encontrado nas primeiras linhas "
-                "dessa coluna. Verifique a letra e a linha inicial."
+                "Nenhum valor foi encontrado "
+                "nas colunas selecionadas."
             )
+
+        # ==================================================
+        # GERAR EXCEL
+        # ==================================================
 
         if st.button(
             "Gerar Excel atualizado",
             type="primary",
         ):
+
             with st.spinner(
-                "Atualizando coluna " + letra_coluna + "..."
+                "Atualizando colunas "
+                + ", ".join(
+                    letras_colunas_selecionadas
+                )
+                + "..."
             ):
-                resultado, conferencias = atualizar_excel(
-                    arquivo_excel=conteudo_arquivo,
-                    nome_aba=nome_aba,
-                    linha_inicio=linha_inicio,
-                    numero_coluna=numero_coluna,
-                    multiplicador=multiplicador,
+
+                resultado, conferencias = (
+                    atualizar_excel(
+                        arquivo_excel=conteudo_arquivo,
+                        nome_aba=nome_aba,
+                        linha_inicio=linha_inicio,
+                        numeros_colunas=numeros_colunas,
+                        multiplicador=multiplicador,
+                    )
                 )
 
             if not conferencias:
                 st.warning(
-                    "Nenhuma célula foi alterada. Verifique a seleção."
+                    "Nenhuma célula foi alterada. "
+                    "Verifique as colunas e a linha inicial."
                 )
                 st.stop()
 
@@ -1111,6 +1186,7 @@ elif extensao == ".xlsx":
             )
 
             st.subheader("Conferência")
+
             st.dataframe(
                 pd.DataFrame(conferencias),
                 use_container_width=True,
@@ -1135,5 +1211,6 @@ elif extensao == ".xlsx":
     except Exception as erro:
         st.error(
             "Não foi possível abrir ou salvar este Excel. "
-            "Detalhe técnico: " + str(erro)
+            "Detalhe técnico: "
+            + str(erro)
         )
