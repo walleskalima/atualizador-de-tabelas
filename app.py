@@ -421,145 +421,35 @@ def parece_preco_excel(valor):
     return bool(re.match(padrao, valor))
 
 
-def letra_para_numero_coluna(letra_coluna):
-    """
-    E -> 5
-    AA -> 27
-    """
-    numero_coluna = 0
-
-    for caractere in letra_coluna.upper():
-        numero_coluna = (
-            numero_coluna * 26
-            + ord(caractere)
-            - ord("A")
-            + 1
-        )
-
-    return numero_coluna
-
-
-def calcular_formula_simples(formula, planilha):
-    """
-    Calcula fórmulas simples de Excel.
-
-    Aceita:
-    +, -, *, /, parênteses
-    referências: A1, E5, AA22
-
-    Exemplos:
-    =E5+100
-    =E5*1.10
-    =(E5+100)*1.05
-
-    Não aceita:
-    =SOMA(E5:E10)
-    =SE(A1>0;1;0)
-    =PROCV(...)
-    """
-    expressao = formula[1:].strip()
-
-    padrao_celula = re.compile(
-        r"\$?([A-Z]{1,3})\$?(\d+)"
-    )
-
-    def substituir_referencia(match):
-        letra = match.group(1)
-        numero_linha = int(match.group(2))
-
-        numero_coluna = letra_para_numero_coluna(
-            letra
-        )
-
-        valor_referencia = planilha.cell(
-            numero_linha,
-            numero_coluna,
-        ).value
-
-        if valor_referencia is None:
-            return "0"
-
-        if (
-            isinstance(valor_referencia, str)
-            and valor_referencia.startswith("=")
-        ):
-            raise ValueError(
-                "A fórmula depende de outra fórmula: "
-                + letra
-                + str(numero_linha)
-            )
-
-        valor_decimal = converter_valor_excel_para_decimal(
-            valor_referencia
-        )
-
-        if valor_decimal is None:
-            raise ValueError(
-                "A célula "
-                + letra
-                + str(numero_linha)
-                + " não possui valor numérico."
-            )
-
-        return str(valor_decimal)
-
-    expressao = padrao_celula.sub(
-        substituir_referencia,
-        expressao,
-    )
-
-    expressao = expressao.replace(",", ".")
-
-    if not re.fullmatch(
-        r"[0-9\.\+\-\*\/\(\)\s]+",
-        expressao,
-    ):
-        raise ValueError(
-            "Fórmula complexa não suportada."
-        )
-
-    try:
-        resultado = eval(
-            expressao,
-            {"__builtins__": {}},
-            {},
-        )
-
-        return Decimal(str(resultado))
-
-    except Exception as erro:
-        raise ValueError(
-            "Erro ao calcular fórmula: " + str(erro)
-        )
-
-
-def calcular_formula_com_multiplicador(
-    formula,
-    planilha,
+def criar_formula_multiplicada(
+    formula_original,
     multiplicador,
 ):
     """
-    Opção 2:
-    calcula toda a fórmula, multiplica o resultado e arredonda para cima.
+    Multiplica o resultado completo da fórmula.
 
-    Exemplo:
+    =E81
+    vira:
+    =(E81)*2.383949988
+
     =E5+100
+    vira:
+    =(E5+100)*2.383949988
 
-    Resultado:
-    teto((resultado de E5+100) x multiplicador)
+    =SOMA(E5:E10)
+    vira:
+    =(SOMA(E5:E10))*2.383949988
     """
-    resultado_formula = calcular_formula_simples(
-        formula,
-        planilha,
-    )
+    formula_sem_igual = formula_original[1:].strip()
 
-    resultado_multiplicado = (
-        resultado_formula
-        * Decimal(str(multiplicador))
-    )
+    if not formula_sem_igual:
+        return formula_original
 
-    return arredondar_sempre_para_cima(
-        resultado_multiplicado
+    return (
+        "=("
+        + formula_sem_igual
+        + ")*"
+        + str(multiplicador)
     )
 
 
@@ -571,14 +461,13 @@ def atualizar_excel(
     multiplicador,
 ):
     """
-    Atualiza somente uma coluna escolhida pela letra.
+    Atualiza uma coluna escolhida pela letra.
 
-    Para valores diretos:
+    Valores diretos:
     teto(valor x multiplicador)
 
-    Para fórmulas simples:
-    calcula o resultado, multiplica, arredonda para cima
-    e grava o número final na célula.
+    Fórmulas:
+    mantém a fórmula e multiplica o resultado completo.
     """
     workbook = load_workbook(
         io.BytesIO(arquivo_excel),
@@ -604,58 +493,39 @@ def atualizar_excel(
         if valor_original is None:
             continue
 
-        # --------------------------------------------------
-        # FÓRMULAS SIMPLES
-        # --------------------------------------------------
+        # Fórmula: mantém fórmula e multiplica resultado.
         if (
             isinstance(valor_original, str)
             and valor_original.startswith("=")
         ):
-            try:
-                resultado_final = calcular_formula_com_multiplicador(
-                    valor_original,
-                    planilha,
-                    multiplicador,
-                )
+            nova_formula = criar_formula_multiplicada(
+                valor_original,
+                multiplicador,
+            )
 
-                # Remove fórmula e deixa somente número final.
-                celula.value = resultado_final
+            celula.value = nova_formula
 
-                formato_anterior = str(celula.number_format)
+            formato_anterior = str(celula.number_format)
 
-                if (
-                    "R$" in formato_anterior
-                    or "$" in formato_anterior
-                ):
-                    celula.number_format = "R$ #,##0"
+            if (
+                "R$" in formato_anterior
+                or "$" in formato_anterior
+            ):
+                celula.number_format = "R$ #,##0"
 
-                conferencias.append(
-                    {
-                        "Linha": numero_linha,
-                        "Célula": celula.coordinate,
-                        "Valor original": valor_original,
-                        "Valor atualizado": resultado_final,
-                        "Tipo": "Fórmula calculada",
-                    }
-                )
-
-            except Exception as erro_formula:
-                conferencias.append(
-                    {
-                        "Linha": numero_linha,
-                        "Célula": celula.coordinate,
-                        "Valor original": valor_original,
-                        "Valor atualizado": "Fórmula mantida",
-                        "Tipo": "Não suportada: "
-                        + str(erro_formula),
-                    }
-                )
+            conferencias.append(
+                {
+                    "Linha": numero_linha,
+                    "Célula": celula.coordinate,
+                    "Valor original": valor_original,
+                    "Valor atualizado": nova_formula,
+                    "Tipo": "Fórmula multiplicada",
+                }
+            )
 
             continue
 
-        # --------------------------------------------------
-        # NÚMEROS OU PREÇOS DIRETOS
-        # --------------------------------------------------
+        # Valor direto: multiplica e arredonda sempre para cima.
         if not parece_preco_excel(valor_original):
             continue
 
@@ -1098,7 +968,7 @@ if extensao == ".pdf":
 
 
 # ==========================================================
-# TELA EXCEL — SEM TÍTULOS
+# TELA EXCEL — SEM TÍTULO DE COLUNA
 # ==========================================================
 
 elif extensao == ".xlsx":
@@ -1148,16 +1018,22 @@ elif extensao == ".xlsx":
             letras_colunas,
         )
 
-        numero_coluna = letra_para_numero_coluna(
-            letra_coluna
-        )
+        numero_coluna = 0
+
+        for caractere in letra_coluna:
+            numero_coluna = (
+                numero_coluna * 26
+                + ord(caractere)
+                - ord("A")
+                + 1
+            )
 
         st.caption(
             "Coluna selecionada: "
             + letra_coluna
-            + ". Células a partir da linha "
+            + ". Serão analisadas apenas as células a partir da linha "
             + str(linha_inicio)
-            + " serão analisadas."
+            + "."
         )
 
         dados_previa = []
@@ -1181,17 +1057,10 @@ elif extensao == ".xlsx":
                 isinstance(valor_original, str)
                 and valor_original.startswith("=")
             ):
-                try:
-                    novo_valor = calcular_formula_com_multiplicador(
-                        valor_original,
-                        planilha_preview,
-                        multiplicador,
-                    )
-                except Exception as erro_formula:
-                    novo_valor = (
-                        "Fórmula não calculada: "
-                        + str(erro_formula)
-                    )
+                novo_valor = criar_formula_multiplicada(
+                    valor_original,
+                    multiplicador,
+                )
             else:
                 valor_decimal = converter_valor_excel_para_decimal(
                     valor_original
@@ -1223,7 +1092,7 @@ elif extensao == ".xlsx":
         else:
             st.warning(
                 "Nenhum valor foi encontrado nas primeiras linhas "
-                "dessa coluna. Verifique a coluna e a linha inicial."
+                "dessa coluna. Verifique a letra e a linha inicial."
             )
 
         if st.button(
