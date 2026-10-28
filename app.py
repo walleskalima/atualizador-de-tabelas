@@ -488,15 +488,51 @@ def atualizar_pdf_mantendo_layout(
             colunas_remover,
         )
 
-    arquivo_final = io.BytesIO()
-
+    # Salva primeiro as alterações de preços e das colunas.
+    pdf_intermediario = io.BytesIO()
     documento.save(
+        pdf_intermediario,
+        garbage=4,
+        deflate=True,
+    )
+    documento.close()
+
+    # Aumenta discretamente todo o conteúdo vetorial em 2%.
+    # A página também cresce na mesma proporção para não cortar conteúdo.
+    # Para impressão em A4, selecione "Ajustar à área imprimível"; em tamanho
+    # real, use papel compatível com a dimensão ligeiramente maior.
+    # O texto permanece vetorial e pesquisável; as outras funcionalidades
+    # (PDF -> Excel e Excel -> Excel) não são alteradas.
+    fator_ampliacao = 1.02
+    pdf_intermediario.seek(0)
+    documento_original = pymupdf.open(
+        stream=pdf_intermediario.getvalue(),
+        filetype="pdf",
+    )
+    documento_ampliado = pymupdf.open()
+
+    for pagina_original in documento_original:
+        largura = pagina_original.rect.width * fator_ampliacao
+        altura = pagina_original.rect.height * fator_ampliacao
+        pagina_nova = documento_ampliado.new_page(
+            width=largura,
+            height=altura,
+        )
+        pagina_nova.show_pdf_page(
+            pagina_nova.rect,
+            documento_original,
+            pagina_original.number,
+            keep_proportion=True,
+        )
+
+    arquivo_final = io.BytesIO()
+    documento_ampliado.save(
         arquivo_final,
         garbage=4,
         deflate=True,
     )
-
-    documento.close()
+    documento_ampliado.close()
+    documento_original.close()
     arquivo_final.seek(0)
 
     return arquivo_final.getvalue(), conferencias
