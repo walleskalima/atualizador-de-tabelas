@@ -236,7 +236,7 @@ def localizar_precos_na_pagina(pagina, colunas_precos=(1,)):
 
 
 def remover_colunas_pdf(pagina, colunas_remover):
-    """Remove colunas selecionadas e recorta a área útil quando TAB 2 e 3 saem."""
+    """Apaga cabeçalhos/preços escolhidos e recorta colunas finais removidas."""
     colunas_remover = set(colunas_remover or [])
     if not colunas_remover:
         return
@@ -245,25 +245,21 @@ def remover_colunas_pdf(pagina, colunas_remover):
     if not centros:
         return
 
-    remover_tab2_e_tab3 = {2, 3}.issubset(colunas_remover) and 1 in centros and 2 in centros
     estrutura = pagina.get_text("dict")
     caixas_remover = []
 
-    # Se TAB 2 e TAB 3 serão removidas, não apagamos os cabeçalhos com retângulos
-    # brancos: recortamos a página na divisória entre TAB 1 e TAB 2. Isso elimina
-    # também os quadrados que apareciam no cabeçalho e o espaço vazio à direita.
-    if not remover_tab2_e_tab3:
-        for bloco in estrutura.get("blocks", []):
-            if bloco.get("type") != 0:
-                continue
-            for linha in bloco.get("lines", []):
-                for span in linha.get("spans", []):
-                    texto = span.get("text", "").strip()
-                    m = re.fullmatch(r"TAB\s*([123])", texto, re.IGNORECASE)
-                    if m and int(m.group(1)) in colunas_remover:
-                        caixas_remover.append(pymupdf.Rect(span["bbox"]))
+    # Apaga os cabeçalhos das colunas selecionadas.
+    for bloco in estrutura.get("blocks", []):
+        if bloco.get("type") != 0:
+            continue
+        for linha in bloco.get("lines", []):
+            for span in linha.get("spans", []):
+                texto = span.get("text", "").strip()
+                m = re.fullmatch(r"TAB\s*([123])", texto, re.IGNORECASE)
+                if m and int(m.group(1)) in colunas_remover:
+                    caixas_remover.append(pymupdf.Rect(span["bbox"]))
 
-    # Para remoção parcial, apaga os preços das colunas selecionadas.
+    # Localiza preços por posição, incluindo valores sem R$.
     for preco in localizar_precos_na_pagina(pagina, tuple(colunas_remover)):
         caixas_remover.append(preco["rect"])
 
@@ -271,7 +267,7 @@ def remover_colunas_pdf(pagina, colunas_remover):
         pagina.add_redact_annot(
             pymupdf.Rect(caixa.x0 - 1, caixa.y0 - 0.5,
                          caixa.x1 + 1, caixa.y1 + 0.5),
-            fill=(0.80, 0.80, 0.80) if caixa.y0 < 45 else (1, 1, 1),
+            fill=(1, 1, 1),
         )
 
     if caixas_remover:
@@ -281,15 +277,10 @@ def remover_colunas_pdf(pagina, colunas_remover):
             text=pymupdf.PDF_REDACT_TEXT_REMOVE,
         )
 
-    if remover_tab2_e_tab3:
-        # Usa a metade da distância entre os centros dos cabeçalhos como limite:
-        # preserva o preço de TAB 1 e elimina as colunas à direita.
-        limite_direito = (centros[1] + centros[2]) / 2
-        limite_direito = min(float(pagina.rect.width), limite_direito)
-        if limite_direito > 100:
-            pagina.set_cropbox(
-                pymupdf.Rect(0, 0, limite_direito, pagina.rect.height)
-            )
+    # Não recortar a página automaticamente. O conteúdo descritivo dos produtos
+    # pode ultrapassar horizontalmente o centro do cabeçalho TAB 1; um crop baseado
+    # apenas no cabeçalho corta descrições e preços. Mantemos a página inteira e
+    # ocultamos somente os cabeçalhos/preços das colunas selecionadas.
 
 
 def colocar_fundo_branco(pagina):
