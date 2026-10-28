@@ -1,96 +1,128 @@
-import io
-import re
-import tempfile
-from decimal import Decimal, InvalidOperation, ROUND_CEILING
-from pathlib import Path
 
-import pandas as pd
-import pymupdf
-import streamlit as st
-from openpyxl import Workbook, load_workbook
-from openpyxl.drawing.image import Image as ExcelImage
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
+                # Fórmula
+                if (
+                    isinstance(
+                        valor_original,
+                        str,
+                    )
+                    and valor_original.startswith("=")
+                ):
+                    novo_valor = (
+                        manter_formula_original(
+                            valor_original
+                        )
+                    )
 
+                else:
+                    valor_decimal = (
+                        converter_valor_excel_para_decimal(
+                            valor_original
+                        )
+                    )
 
-# ==========================================================
-# CONFIGURAÇÃO
-# ==========================================================
+                    if valor_decimal is None:
+                        novo_valor = (
+                            "Não será alterado"
+                        )
+                    else:
+                        novo_valor = (
+                            arredondar_sempre_para_cima(
+                                valor_decimal
+                                * Decimal(
+                                    str(multiplicador)
+                                )
+                            )
+                        )
 
-st.set_page_config(
-    page_title="Atualizador de Preços",
-    page_icon="💰",
-    layout="wide",
-)
+                dados_previa.append(
+                    {
+                        "Coluna": letra_coluna,
+                        "Linha": numero_linha,
+                        "Célula": (
+                            letra_coluna
+                            + str(numero_linha)
+                        ),
+                        "Valor original": valor_original,
+                        "Novo valor": novo_valor,
+                    }
+                )
 
-st.title("💰 Atualizador de Preços")
-st.caption(
-    "PDF → PDF, PDF → Excel e Excel → Excel."
-)
+        if dados_previa:
+            st.subheader("Prévia")
 
+            st.dataframe(
+                pd.DataFrame(dados_previa),
+                use_container_width=True,
+                hide_index=True,
+            )
 
-# ==========================================================
-# PREÇOS E ARREDONDAMENTO
-# ==========================================================
+        else:
+            st.warning(
+                "Nenhum valor foi encontrado "
+                "nas colunas selecionadas."
+            )
 
-PADRAO_PRECO = re.compile(
-    r"(?:R\$\s*)?\d{1,3}(?:\.\d{3})*,\d{2}"
-)
+        # ==================================================
+        # GERAR EXCEL
+        # ==================================================
 
+        if st.button(
+            "Gerar Excel atualizado",
+            type="primary",
+        ):
 
-def arredondar_sempre_para_cima(valor):
-    """
-    Exemplos:
-    10,01 -> 11
-    10,99 -> 11
-    20,00 -> 20
-    """
-    return int(
-        Decimal(str(valor)).quantize(
-            Decimal("1"),
-            rounding=ROUND_CEILING,
-        )
-    )
+            with st.spinner(
+                "Atualizando colunas "
+                + ", ".join(
+                    letras_colunas_selecionadas
+                )
+                + "..."
+            ):
 
+                resultado, conferencias = (
+                    atualizar_excel(
+                        arquivo_excel=conteudo_arquivo,
+                        nome_aba=nome_aba,
+                        linha_inicio=linha_inicio,
+                        numeros_colunas=numeros_colunas,
+                        multiplicador=multiplicador,
+                    )
+                )
 
-def texto_preco_para_decimal(texto_preco):
-    """
-    Converte:
-    R$ 926,82 -> Decimal("926.82")
-    R$ 1.073,88 -> Decimal("1073.88")
-    """
-    texto = str(texto_preco).upper()
-    texto = texto.replace("R$", "").strip()
-    texto = texto.replace(".", "").replace(",", ".")
+            if not conferencias:
+                st.warning(
+                    "Nenhuma célula foi alterada. "
+                    "Verifique as colunas e a linha inicial."
+                )
+                st.stop()
 
-    try:
-        return Decimal(texto)
-    except InvalidOperation:
-        return None
+            st.success(
+                "Excel pronto. "
+                + str(len(conferencias))
+                + " célula(s) processada(s)."
+            )
 
+            st.subheader("Conferência")
 
-def formatar_preco_brasileiro(valor_inteiro):
-    """
-    Converte:
-    2210 -> R$ 2.210
-    """
-    numero = f"{valor_inteiro:,}"
-    numero = numero.replace(",", ".")
-    return f"R$ {numero}"
+            st.dataframe(
+                pd.DataFrame(conferencias),
+                use_container_width=True,
+                hide_index=True,
+            )
 
+            nome_saida = (
+                Path(nome_arquivo).stem
+                + "_precos_atualizados.xlsx"
+            )
 
-def calcular_novo_preco(texto_preco, multiplicador):
-    """
-    Novo preço = teto(preço original x multiplicador)
-    """
-    valor_original = texto_preco_para_decimal(texto_preco)
+            st.download_button(
+                label="⬇️ Baixar Excel atualizado",
+                data=resultado,
+                file_name=nome_saida,
+                mime=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "spreadsheetml.sheet"
+                ),
+            )
 
-    if valor_original is None:
-        return None
-
-    resultado = valor_original * Decimal(str(multiplicador))
-
-    return arredondar_sempre_para_cima(resultado)
-
-
-# ==========================================================
+    except Exception as erro:
