@@ -34,7 +34,7 @@ st.caption(
 # ==========================================================
 
 PADRAO_PRECO = re.compile(
-    r"R\$\s*\d{1,3}(?:\.\d{3})*,\d{2}"
+    r"(?:R\$\s*)?\d{1,3}(?:\.\d{3})*,\d{2}"
 )
 
 
@@ -134,10 +134,13 @@ def medir_largura_texto(texto, fonte, tamanho):
         return len(texto) * tamanho * 0.55
 
 
+
 def localizar_precos_na_pagina(pagina):
     encontrados = []
-
     estrutura = pagina.get_text("dict")
+
+    # Identifica as posições dos cabeçalhos das colunas.
+    centros = {}
 
     for bloco in estrutura.get("blocks", []):
         if bloco.get("type") != 0:
@@ -145,60 +148,80 @@ def localizar_precos_na_pagina(pagina):
 
         for linha in bloco.get("lines", []):
             for span in linha.get("spans", []):
-                texto_span = span.get("text", "")
+                texto = span.get("text", "").strip()
+                correspondencia = re.fullmatch(
+                    r"TAB\s*([12])", texto, re.IGNORECASE
+                )
 
-                if not texto_span:
+                if correspondencia:
+                    numero = int(correspondencia.group(1))
+                    x0, y0, x1, y1 = span["bbox"]
+                    centros[numero] = (x0 + x1) / 2
+
+    if 1 not in centros or 2 not in centros:
+        return encontrados
+
+    centro_tab1 = centros[1]
+    centro_tab2 = centros[2]
+    distancia = centro_tab2 - centro_tab1
+
+    limite_esquerdo = centro_tab1 - distancia / 2
+    limite_direito = (centro_tab1 + centro_tab2) / 2
+
+    for bloco in estrutura.get("blocks", []):
+        if bloco.get("type") != 0:
+            continue
+
+        for linha in bloco.get("lines", []):
+            for span in linha.get("spans", []):
+                texto = span.get("text", "").strip()
+
+                if not texto:
                     continue
 
+                # Considera apenas spans com preços.
                 correspondencias = list(
-                    PADRAO_PRECO.finditer(texto_span)
+                    PADRAO_PRECO.finditer(texto)
                 )
 
                 if not correspondencias:
                     continue
 
                 x0, y0, x1, y1 = span["bbox"]
-                largura_span = x1 - x0
-                tamanho_span = max(len(texto_span), 1)
 
                 for correspondencia in correspondencias:
                     inicio = correspondencia.start()
                     fim = correspondencia.end()
 
-                    if inicio == 0 and fim == len(texto_span):
-                        caixa_preco = pymupdf.Rect(
-                            x0,
-                            y0,
-                            x1,
-                            y1,
-                        )
-                    else:
-                        x_inicio = x0 + (
-                            largura_span * inicio / tamanho_span
-                        )
+                    # Calcula a posição aproximada do preço.
+                    largura = x1 - x0
+                    tamanho = max(len(texto), 1)
 
-                        x_fim = x0 + (
-                            largura_span * fim / tamanho_span
-                        )
+                    preco_x0 = x0 + largura * inicio / tamanho
+                    preco_x1 = x0 + largura * fim / tamanho
+                    centro_preco = (preco_x0 + preco_x1) / 2
 
-                        caixa_preco = pymupdf.Rect(
-                            x_inicio,
-                            y0,
-                            x_fim,
-                            y1,
-                        )
+                    # Ignora TAB 2, TAB 3 e outros números.
+                    if not (
+                        limite_esquerdo
+                        <= centro_preco
+                        <= limite_direito
+                    ):
+                        continue
 
-                    encontrados.append(
-                        {
-                            "texto_original": correspondencia.group(0),
-                            "rect": caixa_preco,
-                            "fonte_original": span.get("font", "helv"),
-                            "tamanho_fonte": span.get("size", 10),
-                            "cor": rgb_inteiro_para_tupla(
-                                span.get("color", 0)
-                            ),
-                        }
+                    caixa = pymupdf.Rect(
+                        preco_x0, y0, preco_x1, y1
                     )
+
+                    encontrados.append({
+                        "texto_original": correspondencia.group(0),
+                        "rect": caixa,
+                        "fonte_original": span.get("font", "helv"),
+                        "tamanho_fonte": span.get("size", 10),
+                        "cor": rgb_inteiro_para_tupla(
+                            span.get("color", 0)
+                        ),
+                    })
 
     return encontrados
 
