@@ -497,13 +497,11 @@ def atualizar_pdf_mantendo_layout(
     )
     documento.close()
 
-    # Aumenta discretamente todo o conteúdo vetorial em 2%.
-    # A página também cresce na mesma proporção para não cortar conteúdo.
-    # Para impressão em A4, selecione "Ajustar à área imprimível"; em tamanho
-    # real, use papel compatível com a dimensão ligeiramente maior.
-    # O texto permanece vetorial e pesquisável; as outras funcionalidades
-    # (PDF -> Excel e Excel -> Excel) não são alteradas.
-    fator_ampliacao = 1.02
+    # Amplia o catálogo em 20% e distribui cada página original em até
+    # quatro folhas do mesmo tamanho. Assim, a impressora não reduz o PDF
+    # para caber na página e o conteúdo não é descartado: as partes que
+    # ultrapassam a primeira folha continuam nas folhas seguintes.
+    fator_ampliacao = 1.20
     pdf_intermediario.seek(0)
     documento_original = pymupdf.open(
         stream=pdf_intermediario.getvalue(),
@@ -512,18 +510,55 @@ def atualizar_pdf_mantendo_layout(
     documento_ampliado = pymupdf.open()
 
     for pagina_original in documento_original:
-        largura = pagina_original.rect.width * fator_ampliacao
-        altura = pagina_original.rect.height * fator_ampliacao
-        pagina_nova = documento_ampliado.new_page(
-            width=largura,
-            height=altura,
+        largura_original = pagina_original.rect.width
+        altura_original = pagina_original.rect.height
+        largura_ampliada = largura_original * fator_ampliacao
+        altura_ampliada = altura_original * fator_ampliacao
+
+        # Cria uma página virtual ampliada mantendo as proporções.
+        pagina_virtual = pymupdf.open()
+        pagina_grande = pagina_virtual.new_page(
+            width=largura_ampliada,
+            height=altura_ampliada,
         )
-        pagina_nova.show_pdf_page(
-            pagina_nova.rect,
+        pagina_grande.show_pdf_page(
+            pagina_grande.rect,
             documento_original,
             pagina_original.number,
             keep_proportion=True,
         )
+
+        # Divide a página ampliada em folhas do tamanho original (A4).
+        # As folhas de borda só são criadas se houver conteúdo além delas.
+        colunas = int((largura_ampliada + largura_original - 1) // largura_original)
+        linhas = int((altura_ampliada + altura_original - 1) // altura_original)
+
+        for linha in range(linhas):
+            for coluna in range(colunas):
+                x0 = coluna * largura_original
+                y0 = linha * altura_original
+                x1 = min(x0 + largura_original, largura_ampliada)
+                y1 = min(y0 + altura_original, altura_ampliada)
+                pagina_saida = documento_ampliado.new_page(
+                    width=largura_original,
+                    height=altura_original,
+                )
+                # Mantém a escala de 120%; a folha recorta naturalmente
+                # apenas o trecho que fica fora de sua área imprimível.
+                destino = pymupdf.Rect(
+                    -x0,
+                    -y0,
+                    largura_ampliada - x0,
+                    altura_ampliada - y0,
+                )
+                pagina_saida.show_pdf_page(
+                    destino,
+                    pagina_virtual,
+                    0,
+                    keep_proportion=False,
+                )
+
+        pagina_virtual.close()
 
     arquivo_final = io.BytesIO()
     documento_ampliado.save(
