@@ -277,15 +277,10 @@ def remover_colunas_pdf(pagina, colunas_remover):
             text=pymupdf.PDF_REDACT_TEXT_REMOVE,
         )
 
-    # Se as colunas mais à direita foram removidas, recorta a página depois
-    # da última coluna mantida, reduzindo a largura sem redimensionar o conteúdo.
-    colunas_mantidas = [n for n in centros if n not in colunas_remover]
-    if colunas_mantidas:
-        ultima_mantida = max(colunas_mantidas, key=lambda n: centros[n])
-        if all(n in colunas_remover for n in centros if centros[n] > centros[ultima_mantida]):
-            limite_direito = min(pagina.rect.width, centros[ultima_mantida] + 25)
-            if limite_direito > 100:
-                pagina.set_cropbox(pymupdf.Rect(0, 0, limite_direito, pagina.rect.height))
+    # Não recortar a página automaticamente. O conteúdo descritivo dos produtos
+    # pode ultrapassar horizontalmente o centro do cabeçalho TAB 1; um crop baseado
+    # apenas no cabeçalho corta descrições e preços. Mantemos a página inteira e
+    # ocultamos somente os cabeçalhos/preços das colunas selecionadas.
 
 
 def colocar_fundo_branco(pagina):
