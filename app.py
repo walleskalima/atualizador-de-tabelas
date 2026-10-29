@@ -33,8 +33,11 @@ st.caption(
 # PREÇOS E ARREDONDAMENTO
 # ==========================================================
 
+# No PDF, só identifica valores monetários que contenham "R$".
+# Isso evita tratar datas, códigos e números do cabeçalho como preços.
 PADRAO_PRECO = re.compile(
-    r"(?:R\$\s*)?\d{1,3}(?:\.\d{3})*,\d{2}"
+    r"R\$\s*\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?",
+    re.IGNORECASE,
 )
 
 
@@ -70,15 +73,15 @@ def texto_preco_para_decimal(texto_preco):
 
 
 def formatar_preco_brasileiro(valor):
+    """Formata valores no padrão brasileiro com exatamente 2 casas decimais.
+
+    Exemplos:
+    763 -> R$ 763,00
+    5223 -> R$ 5.223,00
+    1234.56 -> R$ 1.234,56
     """
-    Formata o preço no padrão brasileiro,
-    sempre com duas casas decimais.
-    Exemplo: 5223 -> R$ 5.223,00
-    """
-    numero = f"{valor:,.2f}"
-    numero = numero.replace(",", "X")
-    numero = numero.replace(".", ",")
-    numero = numero.replace("X", ".")
+    numero = f"{Decimal(str(valor)):,.2f}"
+    numero = numero.replace(",", "X").replace(".", ",").replace("X", ".")
     return f"R$ {numero}"
 
 
@@ -135,6 +138,39 @@ def medir_largura_texto(texto, fonte, tamanho):
         )
     except Exception:
         return len(texto) * tamanho * 0.55
+
+
+def localizar_tamanho_titulo_proximo(pagina, caixa_preco, tamanho_padrao):
+    """Retorna o tamanho da fonte do título de produto mais próximo do preço."""
+    centro_y = (caixa_preco.y0 + caixa_preco.y1) / 2
+    candidatos = []
+    estrutura = pagina.get_text("dict")
+
+    for bloco in estrutura.get("blocks", []):
+        if bloco.get("type") != 0:
+            continue
+        for linha in bloco.get("lines", []):
+            for span in linha.get("spans", []):
+                texto = span.get("text", "").strip()
+                if not texto:
+                    continue
+                fonte = str(span.get("font", "")).lower()
+                # Os títulos de produto do catálogo aparecem em negrito.
+                if "bold" not in fonte:
+                    continue
+                if re.search(r"(?:R\$|TAB\s*[123])", texto, re.IGNORECASE):
+                    continue
+                x0, y0, x1, y1 = span["bbox"]
+                centro_titulo_y = (y0 + y1) / 2
+                distancia_y = abs(centro_titulo_y - centro_y)
+                # Evita usar cabeçalhos gerais ou títulos de outro produto.
+                if distancia_y <= 28 and x0 < caixa_preco.x0:
+                    candidatos.append((distancia_y, float(span.get("size", tamanho_padrao))))
+
+    if not candidatos:
+        return tamanho_padrao
+    candidatos.sort(key=lambda item: item[0])
+    return candidatos[0][1]
 
 
 def localizar_cabecalhos_tabelas(pagina):
@@ -467,11 +503,15 @@ def atualizar_pdf_mantendo_layout(
             texto_novo = item["texto_novo"]
             fonte = item["fonte"]
             cor = item["cor"]
-            # No modo horizontal, o preço precisa ser fácil de ler para
-            # pessoas idosas. Aumentamos apenas o valor e usamos a largura
-            # disponível da coluna TAB 1, alinhando-o à direita como no original.
+            # O preço usa o mesmo tamanho de fonte do título do produto mais
+            # próximo. Isso mantém uma hierarquia visual consistente no catálogo.
             aumentar_preco = formato_saida == "A4 horizontal + letras maiores"
-            tamanho_ajustado = item["tamanho"] * (1.5 if aumentar_preco else 1.0)
+            tamanho_titulo = localizar_tamanho_titulo_proximo(
+                pagina,
+                caixa,
+                item["tamanho"],
+            )
+            tamanho_ajustado = tamanho_titulo
             largura_nova = medir_largura_texto(
                 texto_novo,
                 fonte,
@@ -480,60 +520,67 @@ def atualizar_pdf_mantendo_layout(
 
             if aumentar_preco:
                 centros_preco = localizar_cabecalhos_tabelas(pagina)
-                limite_direito = caixa.x1 + 4
+                # Use a coluna disponível e reserve espaço para o preço inteiro.
+                limite_direito = min(pagina.rect.width - 12, caixa.x1 + largura_nova + 16)
                 if 1 in centros_preco and 2 in centros_preco:
                     limite_direito = min(
                         limite_direito,
                         (centros_preco[1] + centros_preco[2]) / 2 - 2,
                     )
-                # Reserva folga horizontal extra para que o último dígito
-                # não seja cortado pelo limite da caixa de texto.
-                folga_horizontal = 12
-                limite_esquerdo = max(0, limite_direito - largura_nova - folga_horizontal)
+                limite_esquerdo = max(4, limite_direito - largura_nova - 12)
                 caixa_texto = pymupdf.Rect(
                     limite_esquerdo,
-                    caixa.y0 - 2,
+                    caixa.y0 - 3,
                     limite_direito,
-                    caixa.y1 + 4,
+                    caixa.y1 + 6,
                 )
                 alinhamento_texto = pymupdf.TEXT_ALIGN_RIGHT
             else:
-                largura_original = caixa.width
-                while largura_nova > largura_original and tamanho_ajustado > 5:
-                    tamanho_ajustado -= 0.2
-                    largura_nova = medir_largura_texto(
-                        texto_novo, fonte, tamanho_ajustado
-                    )
+                # A string com ,00 é mais larga que o preço original.
+                # Não reduza a fonte: amplie a caixa para evitar cortar o último zero.
+                largura_caixa = max(caixa.width + 18, largura_nova + 12)
+                x0_texto = max(2, caixa.x0 - 1)
+                x1_texto = min(pagina.rect.width - 2, x0_texto + largura_caixa)
                 caixa_texto = pymupdf.Rect(
-                    caixa.x0,
-                    caixa.y0 - 0.5,
-                    max(caixa.x1, caixa.x0 + largura_nova + 3),
-                    caixa.y1 + 2,
+                    x0_texto,
+                    caixa.y0 - 2,
+                    x1_texto,
+                    caixa.y1 + 5,
                 )
                 alinhamento_texto = pymupdf.TEXT_ALIGN_LEFT
 
-            resultado_texto = pagina.insert_textbox(
-                caixa_texto,
+            # Calcula a largura real do valor e o posiciona pela linha de base.
+            # Assim, os caracteres finais (como o segundo zero de ",00") não
+            # dependem da largura/altura de uma caixa de texto estreita.
+            largura_real = medir_largura_texto(
+                texto_novo,
+                fonte,
+                tamanho_ajustado,
+            )
+            margem_direita = 2.5
+            x_final = min(pagina.rect.width - margem_direita, caixa.x1)
+            x_inicio = x_final - largura_real
+
+            # Mantém o preço dentro da página. Só reduz a fonte se realmente
+            # não houver espaço horizontal suficiente.
+            tamanho_minimo = 5.5
+            while x_inicio < 2 and tamanho_ajustado > tamanho_minimo:
+                tamanho_ajustado -= 0.25
+                largura_real = medir_largura_texto(
+                    texto_novo,
+                    fonte,
+                    tamanho_ajustado,
+                )
+                x_inicio = x_final - largura_real
+
+            pagina.insert_text(
+                pymupdf.Point(x_inicio, caixa.y1 - 2.5),
                 texto_novo,
                 fontname=fonte,
                 fontsize=tamanho_ajustado,
                 color=cor,
-                align=alinhamento_texto,
                 overlay=True,
             )
-
-            if resultado_texto < 0:
-                pagina.insert_text(
-                    pymupdf.Point(
-                        caixa.x0,
-                        caixa.y1 - 1,
-                    ),
-                    texto_novo,
-                    fontname=fonte,
-                    fontsize=tamanho_ajustado,
-                    color=cor,
-                    overlay=True,
-                )
 
             conferencias.append(
                 {
