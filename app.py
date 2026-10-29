@@ -75,11 +75,11 @@ def texto_preco_para_decimal(texto_preco):
 def formatar_preco_brasileiro(valor_inteiro):
     """
     Converte:
-    2210 -> R$ 2.210
+    2210 -> R$ 2.210,00
     """
     numero = f"{valor_inteiro:,}"
     numero = numero.replace(",", ".")
-    return f"R$ {numero}"
+    return f"R$ {numero},00"
 
 
 def calcular_novo_preco(texto_preco, multiplicador):
