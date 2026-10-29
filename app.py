@@ -24,9 +24,7 @@ st.set_page_config(
 )
 
 st.title("💰 Atualizador de Preços")
-st.caption(
-    "PDF → PDF, PDF → Excel e Excel → Excel."
-)
+st.caption("PDF → PDF, PDF → Excel e Excel → Excel.")
 
 
 # ==========================================================
@@ -70,26 +68,20 @@ def texto_preco_para_decimal(texto_preco):
 
 
 def formatar_preco_brasileiro(valor_inteiro):
-    """
-    Converte:
-    2210 -> R$ 2.210
-    """
+    """Converte 2210 em R$ 2.210."""
     numero = f"{valor_inteiro:,}"
     numero = numero.replace(",", ".")
     return f"R$ {numero}"
 
 
 def calcular_novo_preco(texto_preco, multiplicador):
-    """
-    Novo preço = teto(preço original x multiplicador)
-    """
+    """Novo preço = teto(preço original x multiplicador)."""
     valor_original = texto_preco_para_decimal(texto_preco)
 
     if valor_original is None:
         return None
 
     resultado = valor_original * Decimal(str(multiplicador))
-
     return arredondar_sempre_para_cima(resultado)
 
 
@@ -113,10 +105,8 @@ def escolher_fonte_pdf(nome_fonte_original):
 
     if "bold" in nome:
         return "hebo"
-
     if "times" in nome:
         return "tiro"
-
     if "courier" in nome:
         return "cour"
 
@@ -142,12 +132,14 @@ def localizar_cabecalhos_tabelas(pagina):
     for bloco in estrutura.get("blocks", []):
         if bloco.get("type") != 0:
             continue
+
         for linha in bloco.get("lines", []):
             for span in linha.get("spans", []):
                 texto = span.get("text", "").strip()
                 correspondencia = re.fullmatch(
                     r"TAB\s*([123])", texto, re.IGNORECASE
                 )
+
                 if correspondencia:
                     numero = int(correspondencia.group(1))
                     x0, _, x1, _ = span["bbox"]
@@ -165,46 +157,67 @@ def localizar_precos_na_pagina(pagina, colunas_precos=(1,)):
         return encontrados
 
     estrutura = pagina.get_text("dict")
-    centros_ordenados = sorted(centros.items(), key=lambda item: item[1])
+    centros_ordenados = sorted(
+        centros.items(),
+        key=lambda item: item[1],
+    )
 
-    # Limites entre colunas calculados a partir dos centros dos cabeçalhos.
+    # Calcula os limites de cada coluna com base nos cabeçalhos.
     limites = {}
+
     for indice, (numero, centro) in enumerate(centros_ordenados):
         if indice > 0:
-            esquerda = (centros_ordenados[indice - 1][1] + centro) / 2
+            esquerda = (
+                centros_ordenados[indice - 1][1] + centro
+            ) / 2
         elif len(centros_ordenados) > 1:
-            distancia_direita = centros_ordenados[1][1] - centro
+            distancia_direita = (
+                centros_ordenados[1][1] - centro
+            )
             esquerda = centro - distancia_direita / 2
         else:
             esquerda = centro - 25
 
         if indice < len(centros_ordenados) - 1:
-            direita = (centro + centros_ordenados[indice + 1][1]) / 2
+            direita = (
+                centro + centros_ordenados[indice + 1][1]
+            ) / 2
         elif len(centros_ordenados) > 1:
-            distancia_esquerda = centro - centros_ordenados[indice - 1][1]
+            distancia_esquerda = (
+                centro - centros_ordenados[indice - 1][1]
+            )
             direita = centro + distancia_esquerda / 2
         else:
             direita = centro + 25
 
-        limites[numero] = (max(0, esquerda), min(pagina.rect.width, direita))
+        limites[numero] = (
+            max(0, esquerda),
+            min(pagina.rect.width, direita),
+        )
 
     for bloco in estrutura.get("blocks", []):
         if bloco.get("type") != 0:
             continue
+
         for linha in bloco.get("lines", []):
             for span in linha.get("spans", []):
                 texto_span = span.get("text", "")
+
                 if not texto_span:
                     continue
 
-                for correspondencia in PADRAO_PRECO.finditer(texto_span):
+                for correspondencia in PADRAO_PRECO.finditer(
+                    texto_span
+                ):
                     x0, y0, x1, y1 = span["bbox"]
                     largura_span = x1 - x0
                     tamanho_span = max(len(texto_span), 1)
                     inicio, fim = correspondencia.span()
 
                     if inicio == 0 and fim == len(texto_span):
-                        caixa_preco = pymupdf.Rect(x0, y0, x1, y1)
+                        caixa_preco = pymupdf.Rect(
+                            x0, y0, x1, y1
+                        )
                     else:
                         caixa_preco = pymupdf.Rect(
                             x0 + largura_span * inicio / tamanho_span,
@@ -213,8 +226,12 @@ def localizar_precos_na_pagina(pagina, colunas_precos=(1,)):
                             y1,
                         )
 
-                    centro_preco = (caixa_preco.x0 + caixa_preco.x1) / 2
+                    centro_preco = (
+                        caixa_preco.x0 + caixa_preco.x1
+                    ) / 2
+
                     coluna_encontrada = None
+
                     for numero, (esquerda, direita) in limites.items():
                         if esquerda <= centro_preco <= direita:
                             coluna_encontrada = numero
@@ -229,14 +246,15 @@ def localizar_precos_na_pagina(pagina, colunas_precos=(1,)):
                         "rect": caixa_preco,
                         "fonte_original": span.get("font", "helv"),
                         "tamanho_fonte": span.get("size", 10),
-                        "cor": rgb_inteiro_para_tupla(span.get("color", 0)),
+                        "cor": rgb_inteiro_para_tupla(
+                            span.get("color", 0)
+                        ),
                     })
 
     return encontrados
 
-
 def remover_colunas_pdf(pagina, colunas_remover):
-    """Apaga cabeçalhos/preços escolhidos e recorta colunas finais removidas."""
+    """Apaga cabeçalhos e preços das colunas escolhidas."""
     colunas_remover = set(colunas_remover or [])
     if not colunas_remover:
         return
@@ -248,25 +266,32 @@ def remover_colunas_pdf(pagina, colunas_remover):
     estrutura = pagina.get_text("dict")
     caixas_remover = []
 
-    # Apaga os cabeçalhos das colunas selecionadas.
     for bloco in estrutura.get("blocks", []):
         if bloco.get("type") != 0:
             continue
+
         for linha in bloco.get("lines", []):
             for span in linha.get("spans", []):
                 texto = span.get("text", "").strip()
-                m = re.fullmatch(r"TAB\s*([123])", texto, re.IGNORECASE)
+                m = re.fullmatch(
+                    r"TAB\s*([123])", texto, re.IGNORECASE
+                )
                 if m and int(m.group(1)) in colunas_remover:
                     caixas_remover.append(pymupdf.Rect(span["bbox"]))
 
-    # Localiza preços por posição, incluindo valores sem R$.
-    for preco in localizar_precos_na_pagina(pagina, tuple(colunas_remover)):
+    for preco in localizar_precos_na_pagina(
+        pagina, tuple(colunas_remover)
+    ):
         caixas_remover.append(preco["rect"])
 
     for caixa in caixas_remover:
         pagina.add_redact_annot(
-            pymupdf.Rect(caixa.x0 - 1, caixa.y0 - 0.5,
-                         caixa.x1 + 1, caixa.y1 + 0.5),
+            pymupdf.Rect(
+                caixa.x0 - 1,
+                caixa.y0 - 0.5,
+                caixa.x1 + 1,
+                caixa.y1 + 0.5,
+            ),
             fill=(1, 1, 1),
         )
 
@@ -277,44 +302,29 @@ def remover_colunas_pdf(pagina, colunas_remover):
             text=pymupdf.PDF_REDACT_TEXT_REMOVE,
         )
 
-    # Se as colunas mais à direita foram removidas, recorta a página depois
-    # da última coluna mantida, reduzindo a largura sem redimensionar o conteúdo.
-    colunas_mantidas = [n for n in centros if n not in colunas_remover]
+    colunas_mantidas = [
+        n for n in centros if n not in colunas_remover
+    ]
+
     if colunas_mantidas:
-        ultima_mantida = max(colunas_mantidas, key=lambda n: centros[n])
-        if all(n in colunas_remover for n in centros if centros[n] > centros[ultima_mantida]):
-            limite_direito = min(pagina.rect.width, centros[ultima_mantida] + 50)
+        ultima_mantida = max(
+            colunas_mantidas, key=lambda n: centros[n]
+        )
+
+        if all(
+            n in colunas_remover
+            for n in centros
+            if centros[n] > centros[ultima_mantida]
+        ):
+            limite_direito = min(
+                pagina.rect.width, centros[ultima_mantida] + 50
+            )
             if limite_direito > 100:
-                pagina.set_cropbox(pymupdf.Rect(0, 0, limite_direito, pagina.rect.height))
-                # Aumentamos a margem direita para acomodar preços grandes.
-                # Reconstituímos o fundo cinza do cabeçalho nessa margem para
-                # não deixar aparecer um retângulo branco da TAB removida.
-                if ultima_mantida == 1 and 2 in colunas_remover:
-                    cabecalho_tab1 = None
-                    for bloco in pagina.get_text("dict").get("blocks", []):
-                        if bloco.get("type") != 0:
-                            continue
-                        for linha in bloco.get("lines", []):
-                            for span in linha.get("spans", []):
-                                if re.fullmatch(r"TAB\s*1", span.get("text", "").strip(), re.IGNORECASE):
-                                    cabecalho_tab1 = pymupdf.Rect(span["bbox"])
-                                    break
-                            if cabecalho_tab1:
-                                break
-                        if cabecalho_tab1:
-                            break
-                    if cabecalho_tab1:
-                        pagina.draw_rect(
-                            pymupdf.Rect(
-                                cabecalho_tab1.x1 + 2,
-                                cabecalho_tab1.y0 - 1,
-                                limite_direito,
-                                cabecalho_tab1.y1 + 1,
-                            ),
-                            color=None,
-                            fill=(0.75, 0.75, 0.75),
-                            overlay=True,
-                        )
+                pagina.set_cropbox(
+                    pymupdf.Rect(
+                        0, 0, limite_direito, pagina.rect.height
+                    )
+                )
 
 
 def colocar_fundo_branco(pagina):
@@ -327,15 +337,18 @@ def colocar_fundo_branco(pagina):
 
 
 def ampliar_catalogo_para_impressao(pdf_bytes, grupos_por_pagina=4):
-    """Reorganiza cada página original em duas páginas A4 horizontais.
-
-    O corte é feito preferencialmente sobre um separador horizontal entre
-    produtos. Assim, cada página final contém vários produtos, o conteúdo não
-    é reduzido para caber na folha e a fonte fica maior para impressão.
     """
-    origem = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    Reorganiza as páginas originais em folhas A4 horizontais.
+    Divide o conteúdo por faixas para acomodar vários produtos
+    por página, preservando a proporção do conteúdo original.
+    """
+    origem = pymupdf.open(
+        stream=pdf_bytes,
+        filetype="pdf",
+    )
     saida = pymupdf.open()
-    largura_pagina = 842  # A4 horizontal, pontos PDF
+
+    largura_pagina = 842
     altura_pagina = 595
     margem = 18
 
@@ -348,51 +361,84 @@ def ampliar_catalogo_para_impressao(pdf_bytes, grupos_por_pagina=4):
             for item in desenho.get("items", []):
                 if item[0] == "l":
                     a, b = item[1], item[2]
-                    if abs(a.y - b.y) <= 1.5 and abs(a.x - b.x) >= largura * 0.72:
+                    if (
+                        abs(a.y - b.y) <= 1.5
+                        and abs(a.x - b.x) >= largura * 0.72
+                    ):
                         y = (a.y + b.y) / 2
                         if altura * 0.30 < y < altura * 0.72:
                             separadores.append(y)
 
-        # Escolhe a linha divisória mais próxima do meio da página para
-        # manter blocos de produtos inteiros e equilibrar as duas metades.
         if separadores:
-            corte = min(separadores, key=lambda y: abs(y - altura / 2))
+            corte = min(
+                separadores,
+                key=lambda y: abs(y - altura / 2),
+            )
         else:
             corte = altura / 2
 
         faixas = [(0.0, corte), (corte, altura)]
+
         for y0, y1 in faixas:
-            clip = pymupdf.Rect(0, max(0, y0), largura, min(altura, y1))
+            clip = pymupdf.Rect(
+                0, max(0, y0), largura, min(altura, y1)
+            )
+
             if clip.height < 80:
                 continue
-            texto_faixa = pagina_origem.get_text("text", clip=clip).strip()
+
+            texto_faixa = pagina_origem.get_text(
+                "text", clip=clip
+            ).strip()
+
             if not texto_faixa:
                 continue
 
-            pagina_nova = saida.new_page(width=largura_pagina, height=altura_pagina)
-            escala = min((largura_pagina - 2 * margem) / clip.width,
-                         (altura_pagina - 2 * margem) / clip.height)
+            pagina_nova = saida.new_page(
+                width=largura_pagina,
+                height=altura_pagina,
+            )
+
+            escala = min(
+                (largura_pagina - 2 * margem) / clip.width,
+                (altura_pagina - 2 * margem) / clip.height,
+            )
+
             w = clip.width * escala
             h = clip.height * escala
             x0_destino = (largura_pagina - w) / 2
             y0_destino = (altura_pagina - h) / 2
-            destino = pymupdf.Rect(x0_destino, y0_destino,
-                                   x0_destino + w, y0_destino + h)
-            pagina_nova.show_pdf_page(destino, origem, pagina_origem.number,
-                                      clip=clip, keep_proportion=True)
 
-    resultado = saida.tobytes(garbage=4, deflate=True)
+            destino = pymupdf.Rect(
+                x0_destino,
+                y0_destino,
+                x0_destino + w,
+                y0_destino + h,
+            )
+
+            pagina_nova.show_pdf_page(
+                destino,
+                origem,
+                pagina_origem.number,
+                clip=clip,
+                keep_proportion=True,
+            )
+
+    resultado = saida.tobytes(
+        garbage=4,
+        deflate=True,
+    )
     saida.close()
     origem.close()
-    return resultado
 
+    return resultado
 
 def atualizar_pdf_mantendo_layout(
     arquivo_pdf,
     multiplicador,
     deixar_fundo_branco=True,
     colunas_remover=(),
-    formato_saida="Manter layout original",
+    modo_horizontal=False,
 ):
     documento = pymupdf.open(
         stream=arquivo_pdf,
@@ -401,18 +447,16 @@ def atualizar_pdf_mantendo_layout(
 
     conferencias = []
 
-    if deixar_fundo_branco:
-        for pagina in documento:
-            colocar_fundo_branco(pagina)
-
     for numero_pagina, pagina in enumerate(documento, start=1):
-        # Primeiro atualiza somente a TAB 1; depois remove as colunas escolhidas.
-        precos_pagina = localizar_precos_na_pagina(pagina, colunas_precos=(1,))
+        precos_pagina = localizar_precos_na_pagina(
+            pagina,
+            colunas_precos=(1,),
+        )
+
         substituicoes = []
 
         for preco in precos_pagina:
             texto_original = preco["texto_original"]
-
             novo_valor = calcular_novo_preco(
                 texto_original,
                 multiplicador,
@@ -421,36 +465,29 @@ def atualizar_pdf_mantendo_layout(
             if novo_valor is None:
                 continue
 
-            texto_novo = formatar_preco_brasileiro(
-                novo_valor
-            )
-
-            caixa_original = preco["rect"]
-
-            caixa_redacao = pymupdf.Rect(
-                caixa_original.x0 - 1.5,
-                caixa_original.y0 - 1.0,
-                caixa_original.x1 + 1.5,
-                caixa_original.y1 + 1.0,
-            )
+            texto_novo = formatar_preco_brasileiro(novo_valor)
+            caixa = preco["rect"]
 
             pagina.add_redact_annot(
-                caixa_redacao,
+                pymupdf.Rect(
+                    caixa.x0 - 1.5,
+                    caixa.y0 - 1,
+                    caixa.x1 + 1.5,
+                    caixa.y1 + 1,
+                ),
                 fill=(1, 1, 1),
             )
 
-            substituicoes.append(
-                {
-                    "texto_original": texto_original,
-                    "texto_novo": texto_novo,
-                    "caixa_original": caixa_original,
-                    "fonte": escolher_fonte_pdf(
-                        preco["fonte_original"]
-                    ),
-                    "tamanho": preco["tamanho_fonte"],
-                    "cor": preco["cor"],
-                }
-            )
+            substituicoes.append({
+                "texto_original": texto_original,
+                "texto_novo": texto_novo,
+                "caixa": caixa,
+                "fonte": escolher_fonte_pdf(
+                    preco["fonte_original"]
+                ),
+                "tamanho": preco["tamanho_fonte"],
+                "cor": preco["cor"],
+            })
 
         if substituicoes:
             pagina.apply_redactions(
@@ -460,107 +497,53 @@ def atualizar_pdf_mantendo_layout(
             )
 
         for item in substituicoes:
-            caixa = item["caixa_original"]
-            texto_novo = item["texto_novo"]
+            caixa = item["caixa"]
             fonte = item["fonte"]
-            cor = item["cor"]
-            # No modo horizontal, o preço precisa ser fácil de ler para
-            # pessoas idosas. Aumentamos apenas o valor e usamos a largura
-            # disponível da coluna TAB 1, alinhando-o à direita como no original.
-            aumentar_preco = formato_saida == "A4 horizontal + letras maiores"
-            tamanho_ajustado = item["tamanho"] * (1.5 if aumentar_preco else 1.0)
+            tamanho = item["tamanho"]
+            texto = item["texto_novo"]
+
+            largura_original = caixa.width
             largura_nova = medir_largura_texto(
-                texto_novo,
+                texto,
                 fonte,
-                tamanho_ajustado,
+                tamanho,
             )
 
-            if aumentar_preco:
-                centros_preco = localizar_cabecalhos_tabelas(pagina)
-                limite_direito = caixa.x1 + 4
-                if 1 in centros_preco and 2 in centros_preco:
-                    limite_direito = min(
-                        limite_direito,
-                        (centros_preco[1] + centros_preco[2]) / 2 - 2,
-                    )
-                # Reserva folga horizontal extra para que o último dígito
-                # não seja cortado pelo limite da caixa de texto.
-                folga_horizontal = 12
-                limite_esquerdo = max(0, limite_direito - largura_nova - folga_horizontal)
-                caixa_texto = pymupdf.Rect(
-                    limite_esquerdo,
-                    caixa.y0 - 2,
-                    limite_direito,
-                    caixa.y1 + 4,
+            while largura_nova > largura_original and tamanho > 5:
+                tamanho -= 0.2
+                largura_nova = medir_largura_texto(
+                    texto,
+                    fonte,
+                    tamanho,
                 )
-                alinhamento_texto = pymupdf.TEXT_ALIGN_RIGHT
-            else:
-                largura_original = caixa.width
-                while largura_nova > largura_original and tamanho_ajustado > 5:
-                    tamanho_ajustado -= 0.2
-                    largura_nova = medir_largura_texto(
-                        texto_novo, fonte, tamanho_ajustado
-                    )
-                caixa_texto = pymupdf.Rect(
-                    caixa.x0,
-                    caixa.y0 - 0.5,
-                    max(caixa.x1, caixa.x0 + largura_nova + 3),
-                    caixa.y1 + 2,
-                )
-                alinhamento_texto = pymupdf.TEXT_ALIGN_LEFT
 
-            resultado_texto = pagina.insert_textbox(
-                caixa_texto,
-                texto_novo,
+            pagina.insert_text(
+                pymupdf.Point(caixa.x0, caixa.y1 - 1),
+                texto,
                 fontname=fonte,
-                fontsize=tamanho_ajustado,
-                color=cor,
-                align=alinhamento_texto,
+                fontsize=tamanho,
+                color=item["cor"],
                 overlay=True,
             )
 
-            if resultado_texto < 0:
-                pagina.insert_text(
-                    pymupdf.Point(
-                        caixa.x0,
-                        caixa.y1 - 1,
-                    ),
-                    texto_novo,
-                    fontname=fonte,
-                    fontsize=tamanho_ajustado,
-                    color=cor,
-                    overlay=True,
-                )
-
-            conferencias.append(
-                {
-                    "Página": numero_pagina,
-                    "Preço original": item["texto_original"],
-                    "Preço atualizado": item["texto_novo"],
-                }
-            )
+            conferencias.append({
+                "Página": numero_pagina,
+                "Preço original": item["texto_original"],
+                "Preço atualizado": texto,
+            })
 
         remover_colunas_pdf(pagina, colunas_remover)
 
-    arquivo_final = io.BytesIO()
-
-    documento.save(
-        arquivo_final,
-        garbage=4,
-        deflate=True,
-    )
-
+    resultado = io.BytesIO()
+    documento.save(resultado, garbage=4, deflate=True)
     documento.close()
-    arquivo_final.seek(0)
 
-    pdf_processado = arquivo_final.getvalue()
+    conteudo = resultado.getvalue()
 
-    # O usuário escolhe se deseja manter o PDF original ou reorganizar o
-    # conteúdo em páginas A4 horizontais, ampliando os blocos para impressão.
-    if formato_saida == "A4 horizontal + letras maiores":
-        pdf_processado = ampliar_catalogo_para_impressao(pdf_processado)
+    if modo_horizontal:
+        conteudo = ampliar_catalogo_para_impressao(conteudo)
 
-    return pdf_processado, conferencias
+    return conteudo, conferencias
 
 
 # ==========================================================
@@ -568,13 +551,6 @@ def atualizar_pdf_mantendo_layout(
 # ==========================================================
 
 def converter_valor_excel_para_decimal(valor):
-    """
-    Aceita:
-    926.82
-    926,82
-    1.073,88
-    R$ 1.073,88
-    """
     if valor is None:
         return None
 
@@ -586,8 +562,7 @@ def converter_valor_excel_para_decimal(valor):
     if not texto:
         return None
 
-    texto = texto.upper().replace("R$", "").strip()
-    texto = texto.replace(" ", "")
+    texto = texto.upper().replace("R$", "").replace(" ", "")
 
     if "," in texto and "." in texto:
         texto = texto.replace(".", "").replace(",", ".")
@@ -601,10 +576,6 @@ def converter_valor_excel_para_decimal(valor):
 
 
 def parece_preco_excel(valor):
-    """
-    Aceita números e preços.
-    Evita alterar medidas e códigos.
-    """
     if isinstance(valor, (int, float, Decimal)):
         return True
 
@@ -612,839 +583,601 @@ def parece_preco_excel(valor):
         return False
 
     padrao = (
-        r"^\s*"
-        r"(R\$\s*)?"
-        r"\d{1,3}(?:\.\d{3})*"
-        r"(?:,\d{1,2})?"
-        r"\s*$"
+        r"^\s*(?:R\$\s*)?"
+        r"\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?\s*$"
     )
 
-    return bool(re.match(padrao, valor))
+    return bool(re.fullmatch(padrao, valor))
 
 
-def manter_formula_original(formula_original):
-    """
-    Mantém a fórmula original da planilha sem multiplicá-la.
-
-    Exemplo:
-
-    =E80/3
-
-    continua sendo:
-
-    =E80/3
-
-    O multiplicador é aplicado somente ao valor original
-    das células que realmente contêm preços, e não às fórmulas.
-    """
-    return formula_original
-
-
-def atualizar_excel(
+def atualizar_planilha_excel(
     arquivo_excel,
-    nome_aba,
-    linha_inicio,
-    numeros_colunas,
     multiplicador,
+    nome_aba=None,
 ):
-    """
-    Atualiza várias colunas escolhidas.
+    arquivo = load_workbook(io.BytesIO(arquivo_excel))
 
-    Valores diretos:
-    teto(valor x multiplicador)
+    if nome_aba and nome_aba in arquivo.sheetnames:
+        abas = [arquivo[nome_aba]]
+    else:
+        abas = arquivo.worksheets
 
-    Fórmulas:
-    mantém a fórmula original sem multiplicá-la.
-    """
+    abas_processadas = []
 
-    workbook = load_workbook(
-        io.BytesIO(arquivo_excel),
-        data_only=False,
-        keep_links=True,
-        rich_text=True,
-    )
+    for aba in abas:
+        alteracoes = 0
 
-    planilha = workbook[nome_aba]
-    conferencias = []
+        for linha in aba.iter_rows():
+            for celula in linha:
+                valor = celula.value
 
-    for numero_coluna in numeros_colunas:
+                if not parece_preco_excel(valor):
+                    continue
 
-        for numero_linha in range(
-            linha_inicio,
-            planilha.max_row + 1,
-        ):
-            celula = planilha.cell(
-                numero_linha,
-                numero_coluna,
-            )
-
-            valor_original = celula.value
-
-            if valor_original is None:
-                continue
-
-            # Fórmula: mantém exatamente como está.
-            if (
-                isinstance(valor_original, str)
-                and valor_original.startswith("=")
-            ):
-                formula_original = manter_formula_original(
-                    valor_original
+                valor_decimal = converter_valor_excel_para_decimal(
+                    valor
                 )
 
-                celula.value = formula_original
+                if valor_decimal is None:
+                    continue
 
-                conferencias.append(
-                    {
-                        "Linha": numero_linha,
-                        "Célula": celula.coordinate,
-                        "Valor original": valor_original,
-                        "Valor atualizado": formula_original,
-                        "Tipo": "Fórmula mantida",
-                    }
+                novo_valor = (
+                    valor_decimal * Decimal(str(multiplicador))
                 )
 
-                continue
-
-            # Valor direto
-            if not parece_preco_excel(valor_original):
-                continue
-
-            valor_decimal = converter_valor_excel_para_decimal(
-                valor_original
-            )
-
-            if valor_decimal is None:
-                continue
-
-            novo_valor = arredondar_sempre_para_cima(
-                valor_decimal
-                * Decimal(str(multiplicador))
-            )
-
-            if (
-                isinstance(valor_original, str)
-                and "R$" in valor_original.upper()
-            ):
-                celula.value = formatar_preco_brasileiro(
+                celula.value = arredondar_sempre_para_cima(
                     novo_valor
                 )
-            else:
-                celula.value = novo_valor
+                celula.number_format = '"R$" #,##0'
+                alteracoes += 1
 
-                formato_anterior = str(
-                    celula.number_format
-                )
+        abas_processadas.append({
+            "Aba": aba.title,
+            "Células atualizadas": alteracoes,
+        })
 
-                if (
-                    "R$" in formato_anterior
-                    or "$" in formato_anterior
-                ):
-                    celula.number_format = "R$ #,##0"
+    resultado = io.BytesIO()
+    arquivo.save(resultado)
 
-            conferencias.append(
-                {
-                    "Linha": numero_linha,
-                    "Célula": celula.coordinate,
-                    "Valor original": valor_original,
-                    "Valor atualizado": celula.value,
-                    "Tipo": "Valor multiplicado",
-                }
-            )
-
-    # Faz o Excel recalcular as fórmulas ao abrir
-    workbook.calculation.fullCalcOnLoad = True
-    workbook.calculation.forceFullCalc = True
-    workbook.calculation.calcMode = "auto"
-
-    arquivo_final = io.BytesIO()
-
-    workbook.save(arquivo_final)
-
-    arquivo_final.seek(0)
-
-    return arquivo_final.getvalue(), conferencias
+    return resultado.getvalue(), abas_processadas
 
 
 # ==========================================================
 # PDF -> EXCEL
 # ==========================================================
 
-def criar_cabecalho(planilha, titulos):
-    for numero_coluna, titulo in enumerate(titulos, start=1):
-        celula = planilha.cell(
-            1,
-            numero_coluna,
-            titulo,
-        )
-
-        celula.font = Font(
-            bold=True,
-            color="FFFFFF",
-        )
-
-        celula.fill = PatternFill(
-            fill_type="solid",
-            fgColor="1F4E78",
-        )
-
-        celula.alignment = Alignment(
-            horizontal="center",
-            vertical="center",
-            wrap_text=True,
-        )
-
-
-def inserir_pagina_pdf_como_imagem(planilha, pagina):
-    pix = pagina.get_pixmap(
-        matrix=pymupdf.Matrix(1.4, 1.4),
-        alpha=False,
-    )
-
-    imagem_bytes = pix.tobytes("png")
-
-    arquivo_temporario = tempfile.NamedTemporaryFile(
-        suffix=".png",
-        delete=False,
-    )
-
-    arquivo_temporario.write(imagem_bytes)
-    arquivo_temporario.close()
-
-    imagem_excel = ExcelImage(
-        arquivo_temporario.name
-    )
-
-    largura_maxima = 1100
-
-    if imagem_excel.width > largura_maxima:
-        proporcao = largura_maxima / imagem_excel.width
-
-        imagem_excel.width = int(
-            imagem_excel.width * proporcao
-        )
-
-        imagem_excel.height = int(
-            imagem_excel.height * proporcao
-        )
-
-    planilha.add_image(imagem_excel, "A1")
-    planilha.column_dimensions["A"].width = 20
-
-
-def adicionar_tabela_extraida(
-    planilha,
-    tabela,
-    linha_inicial,
-    numero_pagina,
-):
-    dados = tabela.extract()
-
-    if not dados:
-        return linha_inicial
-
-    celula_titulo = planilha.cell(
-        linha_inicial,
-        1,
-        "Tabela encontrada - Página "
-        + str(numero_pagina),
-    )
-
-    celula_titulo.font = Font(
-        bold=True,
-        color="FFFFFF",
-    )
-
-    celula_titulo.fill = PatternFill(
-        fill_type="solid",
-        fgColor="4F81BD",
-    )
-
-    linha_inicial += 1
-
-    for linha_pdf in dados:
-        for numero_coluna, valor in enumerate(
-            linha_pdf,
-            start=1,
-        ):
-            celula = planilha.cell(
-                linha_inicial,
-                numero_coluna,
-                valor,
-            )
-
-            celula.alignment = Alignment(
-                vertical="top",
-                wrap_text=True,
-            )
-
-        linha_inicial += 1
-
-    return linha_inicial + 2
-
-
-def converter_pdf_para_excel(arquivo_pdf):
+def extrair_tabelas_pdf(arquivo_pdf):
     documento = pymupdf.open(
         stream=arquivo_pdf,
         filetype="pdf",
     )
 
-    workbook = Workbook()
+    registros = []
 
-    planilha_tabelas = workbook.active
-    planilha_tabelas.title = "Tabelas extraídas"
+    for numero_pagina, pagina in enumerate(documento, start=1):
+        texto = pagina.get_text("text")
 
-    planilha_texto = workbook.create_sheet(
-        "Texto por página"
-    )
-
-    criar_cabecalho(
-        planilha_texto,
-        [
-            "Página",
-            "Texto extraído",
-        ],
-    )
-
-    planilha_texto.column_dimensions["A"].width = 12
-    planilha_texto.column_dimensions["B"].width = 100
-    planilha_texto.freeze_panes = "A2"
-
-    linha_texto = 2
-    linha_tabelas = 1
-    quantidade_tabelas = 0
-
-    for numero_pagina, pagina in enumerate(
-        documento,
-        start=1,
-    ):
-        texto_pagina = pagina.get_text("text")
-
-        for linha in texto_pagina.splitlines():
+        for linha in texto.splitlines():
             linha = linha.strip()
 
-            if not linha:
-                continue
-
-            planilha_texto.cell(
-                linha_texto,
-                1,
-                numero_pagina,
-            )
-
-            celula_texto = planilha_texto.cell(
-                linha_texto,
-                2,
-                linha,
-            )
-
-            celula_texto.alignment = Alignment(
-                vertical="top",
-                wrap_text=True,
-            )
-
-            linha_texto += 1
-
-        try:
-            resultado_tabelas = pagina.find_tables()
-
-            for tabela in resultado_tabelas.tables:
-                linha_tabelas = adicionar_tabela_extraida(
-                    planilha_tabelas,
-                    tabela,
-                    linha_tabelas,
-                    numero_pagina,
-                )
-
-                quantidade_tabelas += 1
-
-        except Exception:
-            pass
-
-        planilha_visual = workbook.create_sheet(
-            "Visual página " + str(numero_pagina)
-        )
-
-        inserir_pagina_pdf_como_imagem(
-            planilha_visual,
-            pagina,
-        )
-
-    planilha_tabelas.column_dimensions["A"].width = 32
-
-    for numero_coluna in range(2, 20):
-        letra = get_column_letter(numero_coluna)
-        planilha_tabelas.column_dimensions[letra].width = 22
-
-    planilha_info = workbook.create_sheet("Informações")
-
-    planilha_info["A1"] = "Conversão de PDF para Excel"
-    planilha_info["A1"].font = Font(
-        bold=True,
-        size=14,
-    )
-
-    planilha_info["A3"] = "Tabelas identificadas"
-    planilha_info["B3"] = quantidade_tabelas
-
-    planilha_info["A5"] = "Observação"
-    planilha_info["A5"].font = Font(bold=True)
-
-    planilha_info["B5"] = (
-        "A aba 'Tabelas extraídas' contém tabelas reconhecidas. "
-        "A aba 'Texto por página' contém conteúdo editável. "
-        "As abas 'Visual página N' preservam a aparência das páginas "
-        "originais como imagem."
-    )
-
-    planilha_info["B5"].alignment = Alignment(
-        wrap_text=True,
-        vertical="top",
-    )
-
-    planilha_info.column_dimensions["A"].width = 28
-    planilha_info.column_dimensions["B"].width = 100
-    planilha_info.row_dimensions[5].height = 75
-
-    arquivo_final = io.BytesIO()
-    workbook.save(arquivo_final)
-    arquivo_final.seek(0)
+            if linha:
+                registros.append({
+                    "Página": numero_pagina,
+                    "Conteúdo": linha,
+                })
 
     documento.close()
 
-    return arquivo_final.getvalue(), quantidade_tabelas
-
-
-# ==========================================================
-# INTERFACE PRINCIPAL
-# ==========================================================
-
-arquivo = st.file_uploader(
-    "Envie um arquivo PDF ou Excel",
-    type=["pdf", "xlsx"],
-)
-
-multiplicador = st.number_input(
-    "Multiplicador de preço",
-    min_value=0.000001,
-    value=2.383949988,
-    step=0.000001,
-    format="%.9f",
-)
-
-if arquivo is None:
-    st.info("Envie um arquivo para começar.")
-    st.stop()
-
-nome_arquivo = arquivo.name
-extensao = Path(nome_arquivo).suffix.lower()
-conteudo_arquivo = arquivo.getvalue()
-
-
-# ==========================================================
-# TELA PDF
-# ==========================================================
-
-if extensao == ".pdf":
-    st.subheader("PDF")
-
-    modo_pdf = st.radio(
-        "O que deseja gerar?",
-        [
-            "PDF com preços atualizados",
-            "Excel convertido do PDF",
-        ],
+    return pd.DataFrame(
+        registros,
+        columns=["Página", "Conteúdo"],
     )
 
-    if modo_pdf == "PDF com preços atualizados":
-        deixar_fundo_branco = st.checkbox(
-            "Adicionar fundo branco atrás dos elementos",
-            value=True,
+
+def converter_pdf_para_excel(arquivo_pdf):
+    df = extrair_tabelas_pdf(arquivo_pdf)
+    saida = io.BytesIO()
+
+    with pd.ExcelWriter(
+        saida,
+        engine="openpyxl",
+    ) as escritor:
+        df.to_excel(
+            escritor,
+            index=False,
+            sheet_name="Dados extraídos",
         )
 
-        st.markdown("**Formato do PDF final**")
-        formato_saida = st.radio(
-            "Escolha como deseja organizar o catálogo para impressão:",
-            [
-                "Manter layout original",
-                "A4 horizontal + letras maiores",
-            ],
-            index=1,
-            help=(
-                "A opção horizontal divide o conteúdo em blocos maiores em folhas A4 horizontais, "
-                "para aproveitar melhor a largura e facilitar a leitura. Ela pode gerar mais páginas."
-            ),
-            key="formato_saida_pdf",
-        )
-        if formato_saida == "A4 horizontal + letras maiores":
-            st.caption(
-                "O catálogo será reorganizado em A4 horizontal. O conteúdo é dividido em blocos "
-                "para caberem vários produtos por página, em vez de um produto por folha."
-            )
+        planilha = escritor.sheets["Dados extraídos"]
+        planilha.freeze_panes = "A2"
+        planilha.auto_filter.ref = planilha.dimensions
+        planilha.column_dimensions["A"].width = 12
+        planilha.column_dimensions["B"].width = 100
 
-        st.markdown("**Colunas que deseja remover do PDF**")
-        st.caption("A TAB 1 continuará sendo multiplicada. As colunas finais removidas também serão recortadas da página.")
-        remover_tab2 = st.checkbox("Remover TAB 2", value=True, key="remover_tab2_pdf")
-        remover_tab3 = st.checkbox("Remover TAB 3", value=True, key="remover_tab3_pdf")
-        colunas_remover = []
-        if remover_tab2:
-            colunas_remover.append(2)
-        if remover_tab3:
-            colunas_remover.append(3)
+        for celulas in planilha.iter_rows():
+            for celula in celulas:
+                celula.alignment = Alignment(
+                    vertical="top",
+                    wrap_text=True,
+                )
 
-        if st.button(
-            "Gerar PDF com preços atualizados",
-            type="primary",
-        ):
-            try:
-                with st.spinner(
-                    "Atualizando preços no PDF..."
-                ):
-                    resultado, conferencias = (
-                        atualizar_pdf_mantendo_layout(
-                            arquivo_pdf=conteudo_arquivo,
-                            multiplicador=multiplicador,
-                            deixar_fundo_branco=deixar_fundo_branco,
-                            colunas_remover=colunas_remover,
-                            formato_saida=formato_saida,
-                        )
+                if celula.row == 1:
+                    celula.font = Font(
+                        bold=True,
+                        color="FFFFFF",
+                    )
+                    celula.fill = PatternFill(
+                        "solid",
+                        fgColor="243B53",
                     )
 
-                if not conferencias:
-                    st.warning(
-                        "Nenhum preço foi identificado. "
-                        "O PDF pode ser escaneado ou usar outro padrão."
-                    )
-                    st.stop()
-
-                st.success(
-                    "PDF pronto. "
-                    + str(len(conferencias))
-                    + " preço(s) da TAB 1 atualizado(s)."
-                    + (" Colunas removidas: " + ", ".join("TAB " + str(c) for c in colunas_remover) + "." if colunas_remover else " Nenhuma coluna removida.")
-                )
-
-                st.dataframe(
-                    pd.DataFrame(conferencias),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-                nome_saida = (
-                    Path(nome_arquivo).stem
-                    + "_precos_atualizados.pdf"
-                )
-
-                st.download_button(
-                    label="⬇️ Baixar PDF atualizado",
-                    data=resultado,
-                    file_name=nome_saida,
-                    mime="application/pdf",
-                )
-
-            except Exception as erro:
-                st.error(
-                    "Não foi possível processar o PDF. "
-                    "Detalhe técnico: " + str(erro)
-                )
-
-    elif modo_pdf == "Excel convertido do PDF":
-        if st.button(
-            "Converter PDF para Excel",
-            type="primary",
-        ):
-            try:
-                with st.spinner(
-                    "Extraindo textos, tabelas e páginas..."
-                ):
-                    resultado, quantidade_tabelas = (
-                        converter_pdf_para_excel(
-                            conteudo_arquivo
-                        )
-                    )
-
-                st.success(
-                    "Excel pronto. "
-                    + str(quantidade_tabelas)
-                    + " tabela(s) identificada(s)."
-                )
-
-                nome_saida = (
-                    Path(nome_arquivo).stem
-                    + "_convertido.xlsx"
-                )
-
-                st.download_button(
-                    label="⬇️ Baixar Excel convertido",
-                    data=resultado,
-                    file_name=nome_saida,
-                    mime=(
-                        "application/vnd.openxmlformats-officedocument."
-                        "spreadsheetml.sheet"
-                    ),
-                )
-
-            except Exception as erro:
-                st.error(
-                    "Não foi possível converter o PDF para Excel. "
-                    "Detalhe técnico: " + str(erro)
-                )
-
+    return saida.getvalue(), len(df)
 
 # ==========================================================
-# TELA EXCEL — SEM TÍTULO DE COLUNA
+# FUNÇÕES DE APOIO
 # ==========================================================
 
-elif extensao == ".xlsx":
-    st.subheader("Excel → Excel")
+def nome_arquivo_sem_extensao(nome):
+    return Path(nome).stem
 
-    st.info(
-        "Não é necessário haver título de coluna. "
-        "Escolha a aba, a primeira linha de valores "
-        "e uma ou mais colunas."
+
+def criar_nome_saida(nome_original, sufixo, extensao):
+    return (
+        f"{nome_arquivo_sem_extensao(nome_original)}"
+        f"_{sufixo}.{extensao}"
     )
 
+
+def mostrar_resumo_pdf(conferencias):
+    if not conferencias:
+        st.warning(
+            "Nenhum preço foi identificado na coluna TAB 1. "
+            "Confira se o PDF contém texto selecionável."
+        )
+        return
+
+    df = pd.DataFrame(conferencias)
+
+    st.success(
+        f"Processamento concluído: {len(df)} preço(s) atualizado(s)."
+    )
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def mostrar_resumo_excel(abas_processadas):
+    if not abas_processadas:
+        st.info("Nenhuma aba foi processada.")
+        return
+
+    df = pd.DataFrame(abas_processadas)
+    total = int(df["Células atualizadas"].sum())
+
+    st.success(
+        f"Processamento concluído: {total} célula(s) atualizada(s)."
+    )
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def validar_multiplicador(multiplicador):
     try:
-        workbook_preview = load_workbook(
-            io.BytesIO(conteudo_arquivo),
-            data_only=False,
-            keep_links=True,
-            rich_text=True,
-        )
+        numero = Decimal(str(multiplicador))
+    except (InvalidOperation, ValueError):
+        return False
 
-        nome_aba = st.selectbox(
-            "1. Escolha a aba",
-            workbook_preview.sheetnames,
-        )
+    return numero.is_finite() and numero > 0
 
-        planilha_preview = workbook_preview[nome_aba]
 
-        linha_inicio = st.number_input(
-            "2. Linha onde começam os preços",
-            min_value=1,
-            max_value=max(
-                1,
-                planilha_preview.max_row,
+def validar_pdf(arquivo):
+    return (
+        arquivo is not None
+        and arquivo.name.lower().endswith(".pdf")
+    )
+
+
+def validar_excel(arquivo):
+    if arquivo is None:
+        return False
+
+    nome = arquivo.name.lower()
+    return nome.endswith((".xlsx", ".xlsm"))
+
+
+def validar_arquivo_nao_vazio(arquivo):
+    return (
+        arquivo is not None
+        and len(arquivo.getvalue()) > 0
+    )
+
+
+def disponibilizar_download(
+    conteudo,
+    nome_arquivo,
+    tipo_mime,
+    texto_botao="Baixar arquivo processado",
+):
+    st.download_button(
+        label=texto_botao,
+        data=conteudo,
+        file_name=nome_arquivo,
+        mime=tipo_mime,
+        use_container_width=True,
+    )
+
+
+# ==========================================================
+# OPÇÕES DO PDF
+# ==========================================================
+
+def exibir_opcoes_pdf():
+    st.subheader("Configurações do PDF")
+
+    multiplicador = st.number_input(
+        "Multiplicador dos preços da TAB 1",
+        min_value=0.000001,
+        value=2.383949988,
+        step=0.1,
+        format="%.9f",
+        help=(
+            "Cada preço da TAB 1 será multiplicado "
+            "por este valor e arredondado para cima."
+        ),
+        key="multiplicador_pdf",
+    )
+
+    st.caption(
+        "As demais colunas não terão seus preços atualizados."
+    )
+
+    remover_tab2 = st.checkbox(
+        "Remover TAB 2",
+        value=True,
+        key="remover_tab2",
+    )
+
+    remover_tab3 = st.checkbox(
+        "Remover TAB 3",
+        value=True,
+        key="remover_tab3",
+    )
+
+    formato = st.radio(
+        "Formato do catálogo para impressão",
+        [
+            "Manter layout original",
+            "A4 horizontal + letras maiores",
+        ],
+        index=0,
+        key="formato_catalogo",
+    )
+
+    colunas_remover = []
+
+    if remover_tab2:
+        colunas_remover.append(2)
+
+    if remover_tab3:
+        colunas_remover.append(3)
+
+    modo_horizontal = (
+        formato == "A4 horizontal + letras maiores"
+    )
+
+    return (
+        multiplicador,
+        tuple(colunas_remover),
+        modo_horizontal,
+    )
+
+
+# ==========================================================
+# PDF -> PDF
+# ==========================================================
+
+def interface_pdf_para_pdf():
+    st.header("📄 Atualizar preços em PDF")
+
+    st.write(
+        "Envie seu catálogo, escolha o multiplicador "
+        "e gere uma nova versão com os preços atualizados."
+    )
+
+    arquivo_pdf = st.file_uploader(
+        "Selecione o catálogo em PDF",
+        type=["pdf"],
+        key="upload_pdf_atualizar",
+    )
+
+    (
+        multiplicador,
+        colunas_remover,
+        modo_horizontal,
+    ) = exibir_opcoes_pdf()
+
+    if arquivo_pdf is None:
+        st.info("Envie um arquivo PDF para começar.")
+        return
+
+    if not validar_arquivo_nao_vazio(arquivo_pdf):
+        st.error("O arquivo enviado está vazio.")
+        return
+
+    if not validar_pdf(arquivo_pdf):
+        st.error("Selecione um arquivo PDF válido.")
+        return
+
+    if not validar_multiplicador(multiplicador):
+        st.error("Informe um multiplicador maior que zero.")
+        return
+
+    if st.button(
+        "🚀 Atualizar preços do PDF",
+        type="primary",
+        use_container_width=True,
+        key="botao_atualizar_pdf",
+    ):
+        try:
+            with st.spinner("Processando o catálogo..."):
+                conteudo_pdf, conferencias = (
+                    atualizar_pdf_mantendo_layout(
+                        arquivo_pdf.getvalue(),
+                        multiplicador,
+                        deixar_fundo_branco=True,
+                        colunas_remover=colunas_remover,
+                        modo_horizontal=modo_horizontal,
+                    )
+                )
+
+            st.session_state["pdf_processado"] = conteudo_pdf
+            st.session_state["pdf_conferencias"] = conferencias
+            st.session_state["pdf_nome_saida"] = criar_nome_saida(
+                arquivo_pdf.name,
+                "atualizado",
+                "pdf",
+            )
+
+        except Exception as erro:
+            st.error(f"Não foi possível processar o PDF: {erro}")
+            return
+
+    if "pdf_processado" in st.session_state:
+        disponibilizar_download(
+            st.session_state["pdf_processado"],
+            st.session_state.get(
+                "pdf_nome_saida",
+                "catalogo_atualizado.pdf",
             ),
-            value=1,
-            step=1,
-            help=(
-                "Exemplo: se o primeiro preço estiver "
-                "em E5, informe 5."
+            "application/pdf",
+            "⬇️ Baixar PDF atualizado",
+        )
+
+        mostrar_resumo_pdf(
+            st.session_state.get("pdf_conferencias", [])
+        )
+        # ==========================================================
+# PDF -> EXCEL
+# ==========================================================
+
+def interface_pdf_para_excel():
+    st.header("📊 Converter PDF para Excel")
+
+    st.write(
+        "Extraia o texto do catálogo PDF e exporte "
+        "o conteúdo para uma planilha Excel."
+    )
+
+    arquivo_pdf = st.file_uploader(
+        "Selecione o arquivo PDF",
+        type=["pdf"],
+        key="upload_pdf_excel",
+    )
+
+    if arquivo_pdf is None:
+        st.info("Envie um arquivo PDF para começar.")
+        return
+
+    if not validar_arquivo_nao_vazio(arquivo_pdf):
+        st.error("O arquivo enviado está vazio.")
+        return
+
+    if not validar_pdf(arquivo_pdf):
+        st.error("Selecione um arquivo PDF válido.")
+        return
+
+    if st.button(
+        "📥 Converter para Excel",
+        type="primary",
+        use_container_width=True,
+        key="botao_pdf_excel",
+    ):
+        try:
+            with st.spinner("Extraindo o conteúdo do PDF..."):
+                conteudo_excel, quantidade_linhas = (
+                    converter_pdf_para_excel(
+                        arquivo_pdf.getvalue()
+                    )
+                )
+
+            st.session_state["excel_convertido"] = conteudo_excel
+            st.session_state["excel_convertido_nome"] = (
+                criar_nome_saida(
+                    arquivo_pdf.name,
+                    "convertido",
+                    "xlsx",
+                )
+            )
+            st.session_state["excel_convertido_linhas"] = (
+                quantidade_linhas
+            )
+
+        except Exception as erro:
+            st.error(f"Não foi possível converter o PDF: {erro}")
+            return
+
+    if "excel_convertido" in st.session_state:
+        st.success(
+            "Conversão concluída: "
+            f"{st.session_state.get('excel_convertido_linhas', 0)} "
+            "linhas extraídas."
+        )
+
+        disponibilizar_download(
+            st.session_state["excel_convertido"],
+            st.session_state.get(
+                "excel_convertido_nome",
+                "dados_convertidos.xlsx",
             ),
-        )
-
-        letras_colunas = [
-            get_column_letter(numero_coluna)
-            for numero_coluna in range(
-                1,
-                planilha_preview.max_column + 1,
-            )
-        ]
-
-        letras_colunas_selecionadas = st.multiselect(
-            "3. Escolha as colunas que deseja alterar",
-            letras_colunas,
-            default=(
-                ["E"]
-                if "E" in letras_colunas
-                else []
+            (
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
             ),
+            "⬇️ Baixar Excel convertido",
         )
 
-        if not letras_colunas_selecionadas:
-            st.warning(
-                "Selecione pelo menos uma coluna."
-            )
-            st.stop()
 
-        # Converte letras para números
-        numeros_colunas = []
+# ==========================================================
+# EXCEL -> EXCEL
+# ==========================================================
 
-        for letra in letras_colunas_selecionadas:
+def interface_excel_para_excel():
+    st.header("📗 Atualizar preços em Excel")
 
-            numero_coluna = 0
+    st.write(
+        "Envie uma planilha Excel e multiplique os valores "
+        "numéricos encontrados nas células."
+    )
 
-            for caractere in letra:
-                numero_coluna = (
-                    numero_coluna * 26
-                    + ord(caractere)
-                    - ord("A")
-                    + 1
+    arquivo_excel = st.file_uploader(
+        "Selecione a planilha Excel",
+        type=["xlsx", "xlsm"],
+        key="upload_excel_atualizar",
+    )
+
+    multiplicador = st.number_input(
+        "Multiplicador dos preços",
+        min_value=0.000001,
+        value=2.0,
+        step=0.1,
+        format="%.6f",
+        key="multiplicador_excel",
+    )
+
+    if arquivo_excel is None:
+        st.info("Envie uma planilha Excel para começar.")
+        return
+
+    if not validar_arquivo_nao_vazio(arquivo_excel):
+        st.error("O arquivo enviado está vazio.")
+        return
+
+    if not validar_excel(arquivo_excel):
+        st.error("Selecione um arquivo Excel válido.")
+        return
+
+    if not validar_multiplicador(multiplicador):
+        st.error("Informe um multiplicador maior que zero.")
+        return
+
+    if st.button(
+        "🚀 Atualizar planilha",
+        type="primary",
+        use_container_width=True,
+        key="botao_atualizar_excel",
+    ):
+        try:
+            with st.spinner("Atualizando a planilha..."):
+                conteudo_excel, resumo = (
+                    atualizar_planilha_excel(
+                        arquivo_excel.getvalue(),
+                        multiplicador,
+                    )
                 )
 
-            numeros_colunas.append(
-                numero_coluna
+            st.session_state["planilha_atualizada"] = (
+                conteudo_excel
+            )
+            st.session_state["planilha_resumo"] = resumo
+            st.session_state["planilha_nome_saida"] = (
+                criar_nome_saida(
+                    arquivo_excel.name,
+                    "atualizado",
+                    "xlsx",
+                )
             )
 
-        st.caption(
-            "Colunas selecionadas: "
-            + ", ".join(
-                letras_colunas_selecionadas
+        except Exception as erro:
+            st.error(
+                f"Não foi possível atualizar o Excel: {erro}"
             )
-            + ". Serão analisadas a partir da linha "
-            + str(linha_inicio)
-            + "."
+            return
+
+    if "planilha_atualizada" in st.session_state:
+        disponibilizar_download(
+            st.session_state["planilha_atualizada"],
+            st.session_state.get(
+                "planilha_nome_saida",
+                "planilha_atualizada.xlsx",
+            ),
+            (
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            "⬇️ Baixar planilha atualizada",
         )
 
-        # ==================================================
-        # PRÉVIA
-        # ==================================================
-
-        dados_previa = []
-
-        for letra_coluna, numero_coluna in zip(
-            letras_colunas_selecionadas,
-            numeros_colunas,
-        ):
-
-            for numero_linha in range(
-                linha_inicio,
-                min(
-                    planilha_preview.max_row + 1,
-                    linha_inicio + 10,
-                ),
-            ):
-
-                valor_original = (
-                    planilha_preview.cell(
-                        numero_linha,
-                        numero_coluna,
-                    ).value
-                )
-
-                if valor_original is None:
-                    continue
-
-                # Fórmula
-                if (
-                    isinstance(
-                        valor_original,
-                        str,
-                    )
-                    and valor_original.startswith("=")
-                ):
-                    novo_valor = (
-                        manter_formula_original(
-                            valor_original
-                        )
-                    )
-
-                else:
-                    valor_decimal = (
-                        converter_valor_excel_para_decimal(
-                            valor_original
-                        )
-                    )
-
-                    if valor_decimal is None:
-                        novo_valor = (
-                            "Não será alterado"
-                        )
-                    else:
-                        novo_valor = (
-                            arredondar_sempre_para_cima(
-                                valor_decimal
-                                * Decimal(
-                                    str(multiplicador)
-                                )
-                            )
-                        )
-
-                dados_previa.append(
-                    {
-                        "Coluna": letra_coluna,
-                        "Linha": numero_linha,
-                        "Célula": (
-                            letra_coluna
-                            + str(numero_linha)
-                        ),
-                        "Valor original": valor_original,
-                        "Novo valor": novo_valor,
-                    }
-                )
-
-        if dados_previa:
-            st.subheader("Prévia")
-
-            st.dataframe(
-                pd.DataFrame(dados_previa),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-        else:
-            st.warning(
-                "Nenhum valor foi encontrado "
-                "nas colunas selecionadas."
-            )
-
-        # ==================================================
-        # GERAR EXCEL
-        # ==================================================
-
-        if st.button(
-            "Gerar Excel atualizado",
-            type="primary",
-        ):
-
-            with st.spinner(
-                "Atualizando colunas "
-                + ", ".join(
-                    letras_colunas_selecionadas
-                )
-                + "..."
-            ):
-
-                resultado, conferencias = (
-                    atualizar_excel(
-                        arquivo_excel=conteudo_arquivo,
-                        nome_aba=nome_aba,
-                        linha_inicio=linha_inicio,
-                        numeros_colunas=numeros_colunas,
-                        multiplicador=multiplicador,
-                    )
-                )
-
-            if not conferencias:
-                st.warning(
-                    "Nenhuma célula foi alterada. "
-                    "Verifique as colunas e a linha inicial."
-                )
-                st.stop()
-
-            st.success(
-                "Excel pronto. "
-                + str(len(conferencias))
-                + " célula(s) processada(s)."
-            )
-
-            st.subheader("Conferência")
-
-            st.dataframe(
-                pd.DataFrame(conferencias),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            nome_saida = (
-                Path(nome_arquivo).stem
-                + "_precos_atualizados.xlsx"
-            )
-
-            st.download_button(
-                label="⬇️ Baixar Excel atualizado",
-                data=resultado,
-                file_name=nome_saida,
-                mime=(
-                    "application/vnd.openxmlformats-officedocument."
-                    "spreadsheetml.sheet"
-                ),
-            )
-
-    except Exception as erro:
-        st.error(
-            "Não foi possível abrir ou salvar este Excel. "
-            "Detalhe técnico: "
-            + str(erro)
+        mostrar_resumo_excel(
+            st.session_state.get("planilha_resumo", [])
         )
+
+
+# ==========================================================
+# MENU PRINCIPAL
+# ==========================================================
+
+def main():
+    st.sidebar.title("📋 Menu")
+
+    opcao = st.sidebar.radio(
+        "Escolha uma funcionalidade:",
+        [
+            "PDF → PDF",
+            "PDF → Excel",
+            "Excel → Excel",
+        ],
+        key="menu_principal",
+    )
+
+    st.sidebar.divider()
+
+    st.sidebar.caption("Atualizador de Preços")
+
+    st.sidebar.info(
+        "Envie seu arquivo, configure as opções "
+        "e baixe o resultado processado."
+    )
+
+    if opcao == "PDF → PDF":
+        interface_pdf_para_pdf()
+
+    elif opcao == "PDF → Excel":
+        interface_pdf_para_excel()
+
+    elif opcao == "Excel → Excel":
+        interface_excel_para_excel()
+
+
+# ==========================================================
+# EXECUÇÃO
+# ==========================================================
+
+if __name__ == "__main__":
+    main()
