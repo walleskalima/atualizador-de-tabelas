@@ -283,9 +283,38 @@ def remover_colunas_pdf(pagina, colunas_remover):
     if colunas_mantidas:
         ultima_mantida = max(colunas_mantidas, key=lambda n: centros[n])
         if all(n in colunas_remover for n in centros if centros[n] > centros[ultima_mantida]):
-            limite_direito = min(pagina.rect.width, centros[ultima_mantida] + 25)
+            limite_direito = min(pagina.rect.width, centros[ultima_mantida] + 50)
             if limite_direito > 100:
                 pagina.set_cropbox(pymupdf.Rect(0, 0, limite_direito, pagina.rect.height))
+                # Aumentamos a margem direita para acomodar preços grandes.
+                # Reconstituímos o fundo cinza do cabeçalho nessa margem para
+                # não deixar aparecer um retângulo branco da TAB removida.
+                if ultima_mantida == 1 and 2 in colunas_remover:
+                    cabecalho_tab1 = None
+                    for bloco in pagina.get_text("dict").get("blocks", []):
+                        if bloco.get("type") != 0:
+                            continue
+                        for linha in bloco.get("lines", []):
+                            for span in linha.get("spans", []):
+                                if re.fullmatch(r"TAB\s*1", span.get("text", "").strip(), re.IGNORECASE):
+                                    cabecalho_tab1 = pymupdf.Rect(span["bbox"])
+                                    break
+                            if cabecalho_tab1:
+                                break
+                        if cabecalho_tab1:
+                            break
+                    if cabecalho_tab1:
+                        pagina.draw_rect(
+                            pymupdf.Rect(
+                                cabecalho_tab1.x1 + 2,
+                                cabecalho_tab1.y0 - 1,
+                                limite_direito,
+                                cabecalho_tab1.y1 + 1,
+                            ),
+                            color=None,
+                            fill=(0.75, 0.75, 0.75),
+                            overlay=True,
+                        )
 
 
 def colocar_fundo_branco(pagina):
@@ -297,106 +326,60 @@ def colocar_fundo_branco(pagina):
     )
 
 
-def ampliar_catalogo_para_impressao(pdf_bytes, grupos_por_pagina=3):
-    """Reorganiza o catálogo em faixas A4 horizontais, aproveitando melhor a folha.
+def ampliar_catalogo_para_impressao(pdf_bytes, grupos_por_pagina=4):
+    """Reorganiza cada página original em duas páginas A4 horizontais.
 
-    Cada página original é dividida em até três faixas, preferindo os separadores
-    horizontais entre produtos. As faixas são ampliadas para ocupar a maior área
-    possível de uma folha A4 horizontal, com margem pequena e sem deformar o PDF.
+    O corte é feito preferencialmente sobre um separador horizontal entre
+    produtos. Assim, cada página final contém vários produtos, o conteúdo não
+    é reduzido para caber na folha e a fonte fica maior para impressão.
     """
     origem = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     saida = pymupdf.open()
     largura_pagina = 842  # A4 horizontal, pontos PDF
     altura_pagina = 595
-    margem = 8
-    quantidade_faixas = max(2, min(int(grupos_por_pagina), 4))
+    margem = 18
 
     for pagina_origem in origem:
         largura = pagina_origem.rect.width
         altura = pagina_origem.rect.height
         separadores = []
 
-        # Identifica linhas horizontais longas, normalmente divisórias entre produtos.
         for desenho in pagina_origem.get_drawings():
             for item in desenho.get("items", []):
                 if item[0] == "l":
                     a, b = item[1], item[2]
-                    if abs(a.y - b.y) <= 1.5 and abs(a.x - b.x) >= largura * 0.68:
+                    if abs(a.y - b.y) <= 1.5 and abs(a.x - b.x) >= largura * 0.72:
                         y = (a.y + b.y) / 2
-                        if altura * 0.16 < y < altura * 0.92:
+                        if altura * 0.30 < y < altura * 0.72:
                             separadores.append(y)
 
-        separadores = sorted(set(round(y, 1) for y in separadores))
-        limites = [0.0]
-        usados = set()
+        # Escolhe a linha divisória mais próxima do meio da página para
+        # manter blocos de produtos inteiros e equilibrar as duas metades.
+        if separadores:
+            corte = min(separadores, key=lambda y: abs(y - altura / 2))
+        else:
+            corte = altura / 2
 
-        # Escolhe separadores próximos das divisões desejadas, evitando faixas minúsculas.
-        for indice in range(1, quantidade_faixas):
-            alvo = altura * indice / quantidade_faixas
-            candidatos = [
-                y for y in separadores
-                if y not in usados
-                and y > limites[-1] + altura * 0.16
-                and altura - y > altura * 0.12
-            ]
-            if candidatos:
-                escolhido = min(candidatos, key=lambda y: abs(y - alvo))
-                if abs(escolhido - alvo) < altura * 0.22:
-                    limites.append(escolhido)
-                    usados.add(escolhido)
-
-        limites.append(altura)
-        limites = sorted(set(limites))
-
-        # Se as divisórias não foram detectadas, divide a página em faixas iguais.
-        if len(limites) < 3:
-            limites = [altura * i / quantidade_faixas for i in range(quantidade_faixas)] + [altura]
-
-        for indice in range(len(limites) - 1):
-            y0, y1 = limites[indice], limites[indice + 1]
-            if y1 - y0 < 100:
-                continue
-
+        faixas = [(0.0, corte), (corte, altura)]
+        for y0, y1 in faixas:
             clip = pymupdf.Rect(0, max(0, y0), largura, min(altura, y1))
+            if clip.height < 80:
+                continue
             texto_faixa = pagina_origem.get_text("text", clip=clip).strip()
             if not texto_faixa:
                 continue
 
-            # Recorta as margens vazias dentro da faixa usando os blocos reais
-            # (texto e imagens), para ampliar o catálogo na folha sem esticar.
-            caixas_conteudo = []
-            for bloco in pagina_origem.get_text("dict").get("blocks", []):
-                caixa_bloco = pymupdf.Rect(bloco.get("bbox", (0, 0, 0, 0)))
-                if caixa_bloco.intersects(clip):
-                    intersecao = caixa_bloco & clip
-                    if intersecao.width > 1 and intersecao.height > 1:
-                        caixas_conteudo.append(intersecao)
-            if caixas_conteudo:
-                caixa_conteudo = caixas_conteudo[0]
-                for caixa in caixas_conteudo[1:]:
-                    caixa_conteudo |= caixa
-                clip = pymupdf.Rect(
-                    max(0, clip.x0, caixa_conteudo.x0 - 10),
-                    max(0, clip.y0, caixa_conteudo.y0 - 10),
-                    min(largura, clip.x1, caixa_conteudo.x1 + 10),
-                    min(altura, clip.y1, caixa_conteudo.y1 + 10),
-                )
-
             pagina_nova = saida.new_page(width=largura_pagina, height=altura_pagina)
-            area_util = pymupdf.Rect(margem, margem, largura_pagina - margem, altura_pagina - margem)
-            escala = min(area_util.width / clip.width, area_util.height / clip.height)
+            escala = min((largura_pagina - 2 * margem) / clip.width,
+                         (altura_pagina - 2 * margem) / clip.height)
             w = clip.width * escala
             h = clip.height * escala
             x0_destino = (largura_pagina - w) / 2
             y0_destino = (altura_pagina - h) / 2
-            destino = pymupdf.Rect(x0_destino, y0_destino, x0_destino + w, y0_destino + h)
-            pagina_nova.show_pdf_page(
-                destino,
-                origem,
-                pagina_origem.number,
-                clip=clip,
-                keep_proportion=True,
-            )
+            destino = pymupdf.Rect(x0_destino, y0_destino,
+                                   x0_destino + w, y0_destino + h)
+            pagina_nova.show_pdf_page(destino, origem, pagina_origem.number,
+                                      clip=clip, keep_proportion=True)
 
     resultado = saida.tobytes(garbage=4, deflate=True)
     saida.close()
@@ -481,36 +464,50 @@ def atualizar_pdf_mantendo_layout(
             texto_novo = item["texto_novo"]
             fonte = item["fonte"]
             cor = item["cor"]
-            tamanho_ajustado = item["tamanho"]
-
-            largura_original = caixa.width
+            # No modo horizontal, o preço precisa ser fácil de ler para
+            # pessoas idosas. Aumentamos apenas o valor e usamos a largura
+            # disponível da coluna TAB 1, alinhando-o à direita como no original.
+            aumentar_preco = formato_saida == "A4 horizontal + letras maiores"
+            tamanho_ajustado = item["tamanho"] * (1.5 if aumentar_preco else 1.0)
             largura_nova = medir_largura_texto(
                 texto_novo,
                 fonte,
                 tamanho_ajustado,
             )
 
-            while (
-                largura_nova > largura_original
-                and tamanho_ajustado > 5
-            ):
-                tamanho_ajustado -= 0.2
-
-                largura_nova = medir_largura_texto(
-                    texto_novo,
-                    fonte,
-                    tamanho_ajustado,
+            if aumentar_preco:
+                centros_preco = localizar_cabecalhos_tabelas(pagina)
+                limite_direito = caixa.x1 + 4
+                if 1 in centros_preco and 2 in centros_preco:
+                    limite_direito = min(
+                        limite_direito,
+                        (centros_preco[1] + centros_preco[2]) / 2 - 2,
+                    )
+                # Reserva folga horizontal extra para que o último dígito
+                # não seja cortado pelo limite da caixa de texto.
+                folga_horizontal = 12
+                limite_esquerdo = max(0, limite_direito - largura_nova - folga_horizontal)
+                caixa_texto = pymupdf.Rect(
+                    limite_esquerdo,
+                    caixa.y0 - 2,
+                    limite_direito,
+                    caixa.y1 + 4,
                 )
-
-            caixa_texto = pymupdf.Rect(
-                caixa.x0,
-                caixa.y0 - 0.5,
-                max(
-                    caixa.x1,
-                    caixa.x0 + largura_nova + 3,
-                ),
-                caixa.y1 + 2,
-            )
+                alinhamento_texto = pymupdf.TEXT_ALIGN_RIGHT
+            else:
+                largura_original = caixa.width
+                while largura_nova > largura_original and tamanho_ajustado > 5:
+                    tamanho_ajustado -= 0.2
+                    largura_nova = medir_largura_texto(
+                        texto_novo, fonte, tamanho_ajustado
+                    )
+                caixa_texto = pymupdf.Rect(
+                    caixa.x0,
+                    caixa.y0 - 0.5,
+                    max(caixa.x1, caixa.x0 + largura_nova + 3),
+                    caixa.y1 + 2,
+                )
+                alinhamento_texto = pymupdf.TEXT_ALIGN_LEFT
 
             resultado_texto = pagina.insert_textbox(
                 caixa_texto,
@@ -518,7 +515,7 @@ def atualizar_pdf_mantendo_layout(
                 fontname=fonte,
                 fontsize=tamanho_ajustado,
                 color=cor,
-                align=pymupdf.TEXT_ALIGN_LEFT,
+                align=alinhamento_texto,
                 overlay=True,
             )
 
