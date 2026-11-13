@@ -661,6 +661,7 @@ def converter_valor_excel_para_decimal(valor):
     if not texto:
         return None
 
+    tinha_moeda = "R$" in texto.upper()
     texto = texto.upper().replace("R$", "").strip()
     texto = texto.replace(" ", "")
 
@@ -668,6 +669,10 @@ def converter_valor_excel_para_decimal(valor):
         texto = texto.replace(".", "").replace(",", ".")
     elif "," in texto:
         texto = texto.replace(",", ".")
+    elif tinha_moeda and "." in texto:
+        # Na tabela DUE DECOR, "R$ 1.051" significa mil e cinquenta e um,
+        # não um valor decimal de 1,051.
+        texto = texto.replace(".", "")
 
     try:
         return Decimal(texto)
@@ -686,8 +691,13 @@ def parece_preco_excel(valor):
     if isinstance(valor, (int, float, Decimal)):
         return True
 
+    # O arquivo DUE DECOR usa texto rico nas células de preço.
+    # Com rich_text=True, o openpyxl retorna CellRichText, não str.
     if not isinstance(valor, str):
-        return False
+        if valor.__class__.__name__ == "CellRichText":
+            valor = str(valor)
+        else:
+            return False
 
     padrao = (
         r"^\s*"
@@ -722,13 +732,9 @@ def atualizar_excel(
     multiplicador,
 ):
     """
-    Atualiza várias colunas escolhidas.
-
-    Valores diretos:
-    teto(valor x multiplicador)
-
-    Fórmulas:
-    mantém a fórmula original sem multiplicá-la.
+    Atualiza as colunas escolhidas em uma aba ou em todas as abas.
+    Quando nome_aba=None, processa todas as abas do arquivo.
+    Fórmulas são mantidas sem multiplicação.
     """
 
     workbook = load_workbook(
@@ -738,89 +744,85 @@ def atualizar_excel(
         rich_text=True,
     )
 
-    planilha = workbook[nome_aba]
+    planilhas = (
+        workbook.worksheets
+        if nome_aba is None
+        else [workbook[nome_aba]]
+    )
     conferencias = []
 
-    for numero_coluna in numeros_colunas:
+    for planilha in planilhas:
+        for numero_coluna in numeros_colunas:
+            for numero_linha in range(
+                linha_inicio,
+                planilha.max_row + 1,
+            ):
+                celula = planilha.cell(numero_linha, numero_coluna)
+                valor_original = celula.value
 
-        for numero_linha in range(
-            linha_inicio,
-            planilha.max_row + 1,
-        ):
-            celula = planilha.cell(
-                numero_linha,
-                numero_coluna,
-            )
+                if valor_original is None:
+                    continue
 
-            valor_original = celula.value
+                # No modo de todas as abas, esta planilha usa preços em texto.
+                # Ignora números soltos (como datas/identificadores no cabeçalho).
+                if nome_aba is None and not isinstance(valor_original, str):
+                    if valor_original.__class__.__name__ != "CellRichText":
+                        continue
 
-            if valor_original is None:
-                continue
+                # Evita multiplicar datas que ficam na mesma coluna dos preços.
+                if celula.is_date:
+                    continue
 
-            # Fórmula: mantém exatamente como está.
-            if e_formula(valor_original):
-                celula.value = manter_formula_original(valor_original)
-
-                conferencias.append(
-                    {
+                # Fórmula: mantém exatamente como está.
+                if e_formula(valor_original):
+                    celula.value = manter_formula_original(valor_original)
+                    conferencias.append({
+                        "Aba": planilha.title,
                         "Linha": numero_linha,
                         "Célula": celula.coordinate,
                         "Valor original": valor_original,
                         "Valor atualizado": valor_original,
                         "Tipo": "Fórmula mantida (NÃO multiplicada)",
-                    }
+                    })
+                    continue
+
+                if not parece_preco_excel(valor_original):
+                    continue
+
+                valor_decimal = converter_valor_excel_para_decimal(
+                    valor_original
+                )
+                if valor_decimal is None:
+                    continue
+
+                novo_valor = arredondar_sempre_para_cima(
+                    valor_decimal * Decimal(str(multiplicador))
                 )
 
-                continue
+                if "R$" in str(valor_original).upper():
+                    celula.value = formatar_preco_brasileiro(novo_valor)
+                else:
+                    celula.value = novo_valor
+                    formato_anterior = str(celula.number_format)
+                    if "R$" in formato_anterior or "$" in formato_anterior:
+                        celula.number_format = "R$ #,##0"
 
-            # Valor direto
-            if not parece_preco_excel(valor_original):
-                continue
-
-            valor_decimal = converter_valor_excel_para_decimal(
-                valor_original
-            )
-
-            if valor_decimal is None:
-                continue
-
-            novo_valor = arredondar_sempre_para_cima(
-                valor_decimal
-                * Decimal(str(multiplicador))
-            )
-
-            if (
-                isinstance(valor_original, str)
-                and "R$" in valor_original.upper()
-            ):
-                celula.value = formatar_preco_brasileiro(novo_valor)
-            else:
-                celula.value = novo_valor
-
-                formato_anterior = str(celula.number_format)
-
-                if "R$" in formato_anterior or "$" in formato_anterior:
-                    celula.number_format = "R$ #,##0"
-
-            conferencias.append(
-                {
+                conferencias.append({
+                    "Aba": planilha.title,
                     "Linha": numero_linha,
                     "Célula": celula.coordinate,
                     "Valor original": valor_original,
                     "Valor atualizado": celula.value,
                     "Tipo": "Valor multiplicado",
-                }
-            )
+                })
 
-    # Faz o Excel recalcular as fórmulas ao abrir
+    # Faz o Excel recalcular as fórmulas ao abrir.
     workbook.calculation.fullCalcOnLoad = True
     workbook.calculation.forceFullCalc = True
     workbook.calculation.calcMode = "auto"
 
     arquivo_final = io.BytesIO()
-
     workbook.save(arquivo_final)
-
     arquivo_final.seek(0)
 
     return arquivo_final.getvalue(), conferencias
@@ -1278,58 +1280,76 @@ elif extensao == ".xlsx":
             rich_text=True,
         )
 
-        nome_aba = st.selectbox(
-            "1. Escolha a aba",
-            workbook_preview.sheetnames,
-        )
-
-        planilha_preview = workbook_preview[nome_aba]
-
-        linha_inicio = st.number_input(
-            "2. Linha onde começam os preços",
-            min_value=1,
-            max_value=max(1, planilha_preview.max_row),
-            value=1,
-            step=1,
+        atualizar_tudo = st.checkbox(
+            "Atualizar todas as abas e todas as colunas de preços (E até I)",
+            value=True,
             help=(
-                "Exemplo: se o primeiro preço estiver "
-                "em E5, informe 5."
+                "Ideal para tabelas como a DUE DECOR: processa todas as abas "
+                "e as colunas de preços de uma só vez."
             ),
         )
 
-        letras_colunas = [
-            get_column_letter(numero_coluna)
-            for numero_coluna in range(
-                1,
-                planilha_preview.max_column + 1,
+        if atualizar_tudo:
+            nome_aba = None
+            linha_inicio = 1
+            numeros_colunas = [5, 6, 7, 8, 9]
+            letras_colunas_selecionadas = ["E", "F", "G", "H", "I"]
+            planilhas_previa = workbook_preview.worksheets
+            st.caption(
+                "Serão processadas todas as "
+                + str(len(planilhas_previa))
+                + " abas, nas colunas E, F, G, H e I."
             )
-        ]
+        else:
+            nome_aba = st.selectbox(
+                "1. Escolha a aba",
+                workbook_preview.sheetnames,
+            )
+            planilha_preview = workbook_preview[nome_aba]
 
-        letras_colunas_selecionadas = st.multiselect(
-            "3. Escolha as colunas que deseja alterar",
-            letras_colunas,
-            default=(["E"] if "E" in letras_colunas else []),
-        )
+            linha_inicio = st.number_input(
+                "2. Linha onde começam os preços",
+                min_value=1,
+                max_value=max(1, planilha_preview.max_row),
+                value=1,
+                step=1,
+                help=(
+                    "Exemplo: se o primeiro preço estiver "
+                    "em E5, informe 5."
+                ),
+            )
 
-        if not letras_colunas_selecionadas:
-            st.warning("Selecione pelo menos uma coluna.")
-            st.stop()
-
-        # Converte letras para números
-        numeros_colunas = []
-
-        for letra in letras_colunas_selecionadas:
-            numero_coluna = 0
-
-            for caractere in letra:
-                numero_coluna = (
-                    numero_coluna * 26
-                    + ord(caractere)
-                    - ord("A")
-                    + 1
+            letras_colunas = [
+                get_column_letter(numero_coluna)
+                for numero_coluna in range(
+                    1,
+                    planilha_preview.max_column + 1,
                 )
+            ]
+            letras_colunas_selecionadas = st.multiselect(
+                "3. Escolha as colunas que deseja alterar",
+                letras_colunas,
+                default=(["E"] if "E" in letras_colunas else []),
+            )
 
-            numeros_colunas.append(numero_coluna)
+            if not letras_colunas_selecionadas:
+                st.warning("Selecione pelo menos uma coluna.")
+                st.stop()
+
+            numeros_colunas = []
+            for letra in letras_colunas_selecionadas:
+                numero_coluna = 0
+                for caractere in letra:
+                    numero_coluna = (
+                        numero_coluna * 26
+                        + ord(caractere)
+                        - ord("A")
+                        + 1
+                    )
+                numeros_colunas.append(numero_coluna)
+
+            planilhas_previa = [planilha_preview]
+
 
         st.caption(
             "Colunas selecionadas: "
@@ -1345,52 +1365,49 @@ elif extensao == ".xlsx":
 
         dados_previa = []
 
-        for letra_coluna, numero_coluna in zip(
-            letras_colunas_selecionadas,
-            numeros_colunas,
-        ):
-            for numero_linha in range(
-                linha_inicio,
-                min(
-                    planilha_preview.max_row + 1,
-                    linha_inicio + 10,
-                ),
+        for planilha_atual in planilhas_previa:
+            for letra_coluna, numero_coluna in zip(
+                letras_colunas_selecionadas,
+                numeros_colunas,
             ):
-                valor_original = planilha_preview.cell(
-                    numero_linha,
-                    numero_coluna,
-                ).value
+                for numero_linha in range(
+                    linha_inicio,
+                    min(
+                        planilha_atual.max_row + 1,
+                        linha_inicio + 10,
+                    ),
+                ):
+                    valor_original = planilha_atual.cell(
+                        numero_linha,
+                        numero_coluna,
+                    ).value
 
-                if valor_original is None:
-                    continue
+                    if valor_original is None:
+                        continue
 
-                if e_formula(valor_original):
-                    novo_valor = manter_formula_original(valor_original)
-
-                elif not parece_preco_excel(valor_original):
-                    novo_valor = "Não será alterado"
-
-                else:
-                    valor_decimal = converter_valor_excel_para_decimal(
-                        valor_original
-                    )
-
-                    if valor_decimal is None:
+                    if e_formula(valor_original):
+                        novo_valor = manter_formula_original(valor_original)
+                    elif not parece_preco_excel(valor_original):
                         novo_valor = "Não será alterado"
                     else:
-                        novo_valor = arredondar_sempre_para_cima(
-                            valor_decimal * Decimal(str(multiplicador))
+                        valor_decimal = converter_valor_excel_para_decimal(
+                            valor_original
                         )
+                        if valor_decimal is None:
+                            novo_valor = "Não será alterado"
+                        else:
+                            novo_valor = arredondar_sempre_para_cima(
+                                valor_decimal * Decimal(str(multiplicador))
+                            )
 
-                dados_previa.append(
-                    {
+                    dados_previa.append({
+                        "Aba": planilha_atual.title,
                         "Coluna": letra_coluna,
                         "Linha": numero_linha,
                         "Célula": letra_coluna + str(numero_linha),
                         "Valor original": str(valor_original),
                         "Novo valor": str(novo_valor),
-                    }
-                )
+                    })
 
         if dados_previa:
             st.subheader("Prévia")
